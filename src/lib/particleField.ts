@@ -34,9 +34,9 @@ interface Particle {
 
 type FilterPredicate = (node: HNode) => boolean
 
-const BUCKET_PX = 4 // column width of the waveform stacking
-const BASE_SPACING = 5
-const MIN_SPACING = 2.2
+const BUCKET_PX = 6 // column width of the waveform stacking
+const DOT_GAP = 1.3 // guaranteed clearance between any two dots
+const BEESWARM_MAX = 2500 // below this, exact collision-free beeswarm placement
 const EXPAND_PX = 44 // a container wider than this on screen opens into its children
 const SNAP_AT = 6000 // above this many visible dots, skip the fly-in animation
 const HALO_ALPHA = 0.9
@@ -252,43 +252,50 @@ export class ParticleField {
       }
     }
 
-    // 4. Vertical "waveform" stacking by x-column. Column width and dot
-    //    spacing follow the bubble scale so neighbours sit shoulder to
-    //    shoulder instead of piling on the centre line. Columns denser than
-    //    the available height keep only their most significant events — the
-    //    wave saturates instead of overflowing the canvas.
-    const bucketPx = BUCKET_PX * scale
-    const colMax = Math.max(24, Math.min(240, Math.floor((maxHalf * 2) / MIN_SPACING)))
-    const buckets = new Map<number, Particle[]>()
-    for (const p of laid) {
-      const b = Math.round(p.tx / bucketPx)
-      const list = buckets.get(b) ?? []
-      list.push(p)
-      buckets.set(b, list)
-    }
+    // 4. Placement, guaranteed overlap-free.
+    //    Sparse views get an exact beeswarm: every dot at its true x, pushed
+    //    just far enough from the centre line that no two circles touch.
+    //    Dense views fall back to snapped columns whose width and row spacing
+    //    are derived from the dot radii, so the guarantee holds by
+    //    construction. Columns denser than the available height keep only
+    //    their most significant events — the wave saturates instead of
+    //    overflowing the canvas.
     this.laid = []
-    for (const list of buckets.values()) {
-      // Aggregates + significant events sit nearest the centre line.
-      list.sort((a, b) => Number(b.aggregate) - Number(a.aggregate) || b.ev.significance - a.ev.significance)
-      const count = Math.min(list.length, colMax)
-      let meanR = 0
-      for (let i = 0; i < count; i++) meanR += list[i].tr
-      meanR = count > 0 ? meanR / count : 0
-      const wantSpacing = Math.max(BASE_SPACING, meanR * 2.05 + 2)
-      const spacing = Math.min(wantSpacing, Math.max(MIN_SPACING, maxHalf / (count / 2 + 0.6)))
-      for (let i = 0; i < list.length; i++) {
-        const p = list[i]
-        if (i >= colMax) {
-          p.visible = false
-          p.tAlpha = 0
-          continue
+    if (laid.length <= BEESWARM_MAX) {
+      this.layoutBeeswarm(laid, centerY)
+    } else {
+      const bucketPx = BUCKET_PX * scale
+      const rCap = (bucketPx - DOT_GAP) / 2 // adjacent columns can never collide
+      const buckets = new Map<number, Particle[]>()
+      for (const p of laid) {
+        p.tr = Math.min(p.tr, rCap)
+        const b = Math.round(p.tx / bucketPx)
+        const list = buckets.get(b) ?? []
+        list.push(p)
+        buckets.set(b, list)
+      }
+      for (const [b, list] of buckets) {
+        // Aggregates + significant events sit nearest the centre line.
+        list.sort((a, b2) => Number(b2.aggregate) - Number(a.aggregate) || b2.ev.significance - a.ev.significance)
+        let rMax = 0
+        for (const p of list) rMax = Math.max(rMax, p.tr)
+        const spacing = rMax * 2 + DOT_GAP
+        const rows = Math.max(1, Math.min(240, Math.floor((maxHalf * 2) / spacing) + 1))
+        const cx = b * bucketPx
+        for (let i = 0; i < list.length; i++) {
+          const p = list[i]
+          if (i >= rows) {
+            p.visible = false
+            p.tAlpha = 0
+            continue
+          }
+          const step = Math.ceil(i / 2)
+          const sign = i % 2 === 0 ? -1 : 1
+          p.tx = cx
+          p.ty = centerY + sign * step * spacing
+          p.tAlpha = 1
+          this.laid.push(p)
         }
-        const step = Math.ceil(i / 2)
-        const sign = i % 2 === 0 ? -1 : 1
-        const jitterY = (hashId(p.ev.id + 'y') - 0.5) * spacing * 0.35
-        p.ty = centerY + sign * step * spacing + jitterY
-        p.tAlpha = 1
-        this.laid.push(p)
       }
     }
 
@@ -304,6 +311,73 @@ export class ParticleField {
           p.r = p.tr
         }
       }
+    }
+  }
+
+  /**
+   * Exact collision-free beeswarm: dots keep their true x (their date) and
+   * take the y closest to the centre line where they fit. Big dots are placed
+   * first so they claim the middle; candidates come from tangency positions
+   * against already-placed neighbours, so no two circles can ever overlap.
+   */
+  private layoutBeeswarm(particles: Particle[], centerY: number) {
+    const order = [...particles].sort(
+      (a, b) => b.tr - a.tr || b.ev.significance - a.ev.significance || (a.ev.id < b.ev.id ? -1 : 1),
+    )
+    const maxR = order.length > 0 ? order[0].tr : 1
+    const cell = Math.max(8, (maxR + DOT_GAP) * 2)
+    const grid = new Map<number, Particle[]>()
+
+    for (const p of order) {
+      const reach = p.tr + maxR + DOT_GAP
+      const c0 = Math.floor((p.tx - reach) / cell)
+      const c1 = Math.floor((p.tx + reach) / cell)
+      const neighbors: Particle[] = []
+      for (let c = c0; c <= c1; c++) {
+        const list = grid.get(c)
+        if (!list) continue
+        for (const q of list) {
+          if (Math.abs(q.tx - p.tx) < p.tr + q.tr + DOT_GAP) neighbors.push(q)
+        }
+      }
+
+      const fits = (y: number) => {
+        for (const q of neighbors) {
+          const dx = p.tx - q.tx
+          const dy = y - q.ty
+          const rr = p.tr + q.tr + DOT_GAP
+          if (dx * dx + dy * dy < rr * rr - 0.5) return false
+        }
+        return true
+      }
+
+      let bestY = centerY
+      if (!fits(centerY)) {
+        const candidates: number[] = []
+        for (const q of neighbors) {
+          const rr = p.tr + q.tr + DOT_GAP
+          const dx = p.tx - q.tx
+          const disc = rr * rr - dx * dx
+          if (disc <= 0) continue
+          const h = Math.sqrt(disc)
+          candidates.push(q.ty - h, q.ty + h)
+        }
+        candidates.sort((a, b) => Math.abs(a - centerY) - Math.abs(b - centerY))
+        bestY = candidates[candidates.length - 1] ?? centerY
+        for (const y of candidates) {
+          if (fits(y)) {
+            bestY = y
+            break
+          }
+        }
+      }
+      p.ty = bestY
+      p.tAlpha = 1
+      this.laid.push(p)
+      const key = Math.floor(p.tx / cell)
+      const list = grid.get(key) ?? []
+      list.push(p)
+      grid.set(key, list)
     }
   }
 
