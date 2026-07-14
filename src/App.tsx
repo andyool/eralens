@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CategoryId, Era, HistEvent, TimeView } from './lib/types'
-import { loadEvents, EVENTS } from './data/events'
+import { loadEvents, EVENTS, type CivDef, type RegionDef } from './data/events'
 import { CATEGORIES, categoryColor } from './data/categories'
 import { MIN_YEAR, MAX_YEAR, clampView, viewAround, viewFromSpan, viewMidYear } from './lib/timeMapping'
 import { buildForest, decimalYear, type HNode } from './lib/hierarchy'
@@ -14,6 +14,7 @@ import SearchBox from './components/SearchBox'
 import Discover from './components/Discover'
 import Sidebar from './components/Sidebar'
 import EraRail from './components/EraRail'
+import FilterRails from './components/FilterRails'
 import Breadcrumb from './components/Breadcrumb'
 import TimeCanvas from './components/TimeCanvas'
 import Navigator from './components/Navigator'
@@ -34,8 +35,12 @@ const FULL_VIEW: TimeView = { startYear: MIN_YEAR, endYear: MAX_YEAR }
 
 export default function App() {
   const [events, setEvents] = useState<HistEvent[]>(EVENTS)
+  const [civDefs, setCivDefs] = useState<CivDef[]>([])
+  const [regionDefs, setRegionDefs] = useState<RegionDef[]>([])
   const [view, setViewState] = useState<TimeView>(FULL_VIEW)
   const [activeCats, setActiveCats] = useState<Set<CategoryId>>(new Set())
+  const [activeCivMask, setActiveCivMask] = useState(0)
+  const [activeRegionMask, setActiveRegionMask] = useState(0)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [activeEraId, setActiveEraId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -105,9 +110,11 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false
-    loadEvents().then((data) => {
+    loadEvents().then(({ events: data, civs, regions }) => {
       if (cancelled) return
       setEvents(data)
+      setCivDefs(civs)
+      setRegionDefs(regions)
       const param = new URLSearchParams(location.search).get('event')
       if (param) {
         const ev = data.find((e) => e.id === param)
@@ -137,26 +144,36 @@ export default function App() {
   // Node predicate lets filters see through containers (a war shows if any of
   // its battles match); the event predicate drives list/keyboard nav.
   const nodePredicate = useMemo(() => {
-    if (activeCats.size === 0) return () => true
+    if (activeCats.size === 0 && activeCivMask === 0 && activeRegionMask === 0) return () => true
     return (node: HNode) => {
+      if (activeCivMask !== 0 && (node.subtreeCivMask & activeCivMask) === 0) return false
+      if (activeRegionMask !== 0 && (node.subtreeRegionMask & activeRegionMask) === 0) return false
+      if (activeCats.size === 0) return true
       for (const c of node.subtreeCats) if (activeCats.has(c)) return true
       return false
     }
-  }, [activeCats])
+  }, [activeCats, activeCivMask, activeRegionMask])
   const eventMatches = useMemo(() => {
-    if (activeCats.size === 0) return () => true
-    return (ev: HistEvent) => ev.categories.some((c) => activeCats.has(c))
-  }, [activeCats])
+    if (activeCats.size === 0 && activeCivMask === 0 && activeRegionMask === 0) return () => true
+    return (ev: HistEvent) => {
+      if (activeCivMask !== 0 && ((ev.civMask ?? 0) & activeCivMask) === 0) return false
+      if (activeRegionMask !== 0 && ((ev.regionMask ?? 0) & activeRegionMask) === 0) return false
+      if (activeCats.size === 0) return true
+      return ev.categories.some((c) => activeCats.has(c))
+    }
+  }, [activeCats, activeCivMask, activeRegionMask])
 
   const counts = useMemo(() => {
     const m = new Map<CategoryId, number>()
     for (const cat of CATEGORIES) m.set(cat.id, 0)
     for (const ev of visibleEvents) {
       if (ev.year < view.startYear || ev.year > view.endYear) continue
+      if (activeCivMask !== 0 && ((ev.civMask ?? 0) & activeCivMask) === 0) continue
+      if (activeRegionMask !== 0 && ((ev.regionMask ?? 0) & activeRegionMask) === 0) continue
       for (const c of ev.categories) m.set(c, (m.get(c) ?? 0) + 1)
     }
     return m
-  }, [visibleEvents, view])
+  }, [visibleEvents, view, activeCivMask, activeRegionMask])
 
   const visibleSorted = useMemo(
     () =>
@@ -353,6 +370,26 @@ export default function App() {
   const onlyCat = useCallback((id: CategoryId) => setActiveCats(new Set([id])), [])
   const clearCats = useCallback(() => setActiveCats(new Set()), [])
 
+  const toggleCiv = useCallback(
+    (bit: number, def: CivDef) => {
+      const turningOn = (activeCivMask & (1 << bit)) === 0
+      setActiveCivMask((m) => m ^ (1 << bit))
+      if (turningOn) {
+        // Filtering to a civilization also frames its era, so the wave you see
+        // is that civilization's own history.
+        jumpView({ startYear: def.start, endYear: def.end })
+        setToast({ title: def.label, desc: 'Showing only events of this civilisation.', color: '#8b9dff' })
+      }
+    },
+    [activeCivMask, jumpView],
+  )
+  const toggleRegion = useCallback((bit: number) => setActiveRegionMask((m) => m ^ (1 << bit)), [])
+  const clearAllFilters = useCallback(() => {
+    setActiveCats(new Set())
+    setActiveCivMask(0)
+    setActiveRegionMask(0)
+  }, [])
+
   const lucky = useCallback(
     (mode: LuckyMode) => {
       const ev = discover(events.filter((e) => e.tier !== 'moment'), mode, new Date())
@@ -478,6 +515,20 @@ export default function App() {
           )}
 
           {mode === 'timeline' && <EraRail activeEraId={activeEraId} onSelect={selectEra} />}
+
+          {mode === 'timeline' && (
+            <FilterRails
+              civs={civDefs}
+              regions={regionDefs}
+              activeCivMask={activeCivMask}
+              activeRegionMask={activeRegionMask}
+              activeCats={activeCats}
+              onToggleCiv={toggleCiv}
+              onToggleRegion={toggleRegion}
+              onToggleCat={toggleCat}
+              onClearAll={clearAllFilters}
+            />
+          )}
 
           {mode === 'timeline' && focusEvent && (
             <div className="focus-banner" role="status">

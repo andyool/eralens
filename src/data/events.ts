@@ -31,19 +31,44 @@ function normTitle(t: string): string {
 /**
  * Compact row emitted by scripts/fetch-wikidata.mjs:
  * [qid, title, year, month, day, endYear, significance, categoryMask, wiki,
- *  lon, lat, parentQid, causes[], effects[], nexts[]]
+ *  lon, lat, parentQid, causes[], effects[], nexts[], civMask, regionMask]
  * where 0 means "absent" and wiki is 1 (derivable from title), 0 (no article)
  * or an explicit article title.
  */
 type CompactRow = [
   string, string, number, number, number, number, number, number,
   0 | 1 | string, number, number, string | 0, string[] | 0, string[] | 0, string[] | 0,
+  number, number,
 ]
+
+/** A civilization filter definition shipped inside events.json. */
+export interface CivDef {
+  id: string
+  label: string
+  /** Heyday span, used to zoom when the filter is switched on. */
+  start: number
+  end: number
+  /** Title regex source — used to tag seed events that predate the masks. */
+  re: string
+}
+
+export interface RegionDef {
+  id: string
+  label: string
+}
 
 interface CompactPayload {
   format: 'eralens-compact-1'
   categories: string[]
+  civs?: CivDef[]
+  regions?: RegionDef[]
   events: CompactRow[]
+}
+
+export interface LoadedData {
+  events: HistEvent[]
+  civs: CivDef[]
+  regions: RegionDef[]
 }
 
 function isCompactPayload(x: unknown): x is CompactPayload {
@@ -56,7 +81,7 @@ function expandCompact(payload: CompactPayload): HistEvent[] {
   const catByBit = payload.categories as CategoryId[]
   const out: HistEvent[] = []
   for (const row of payload.events) {
-    const [qid, title, year, month, day, endYear, sig, mask, wiki, lon, lat, parent, causes, effects, nexts] = row
+    const [qid, title, year, month, day, endYear, sig, mask, wiki, lon, lat, parent, causes, effects, nexts, civMask, regionMask] = row
     if (typeof qid !== 'string' || typeof title !== 'string' || typeof year !== 'number') continue
     const categories: CategoryId[] = []
     for (let i = 0; i < catByBit.length; i++) if (mask & (1 << i)) categories.push(catByBit[i])
@@ -82,9 +107,34 @@ function expandCompact(payload: CompactPayload): HistEvent[] {
       parentId: parent ? `wd_${parent}` : undefined,
       tier: parent ? 'event' : undefined,
       relations: relations.length > 0 ? relations : undefined,
+      civMask: civMask || undefined,
+      regionMask: regionMask || undefined,
     })
   }
   return out
+}
+
+/**
+ * The curated seed predates the civilization masks — tag its events by title
+ * so "Storming of the Bastille" still shows under the France filter.
+ */
+function tagSeedMasks(civs: CivDef[]): void {
+  if (civs.length === 0) return
+  const res = civs.map((c) => {
+    try {
+      return new RegExp(c.re, 'i')
+    } catch {
+      return null
+    }
+  })
+  for (const ev of EVENTS) {
+    if (ev.civMask !== undefined) continue
+    let mask = 0
+    for (let i = 0; i < res.length; i++) {
+      if (res[i]?.test(ev.title)) mask |= 1 << i
+    }
+    if (mask) ev.civMask = mask
+  }
 }
 
 /**
@@ -126,23 +176,26 @@ function mergeWithSeed(generated: HistEvent[]): HistEvent[] {
  * Load the event dataset. Merges a generated `events.json` (produced by
  * `npm run fetch:wikidata`, served from the app root) into the seed so the
  * same UI can scale to hundreds of thousands of records; otherwise falls back
- * to the in-repo seed alone so the app always works offline.
+ * to the in-repo seed alone so the app always works offline. Also returns the
+ * civilization/region filter definitions shipped inside the file.
  */
-export async function loadEvents(): Promise<HistEvent[]> {
+export async function loadEvents(): Promise<LoadedData> {
   try {
     const res = await fetch(`${import.meta.env.BASE_URL}events.json`, { cache: 'no-cache' })
     if (res.ok) {
       const data = (await res.json()) as unknown
       if (isCompactPayload(data)) {
-        return mergeWithSeed(expandCompact(data))
+        const civs = data.civs ?? []
+        tagSeedMasks(civs)
+        return { events: mergeWithSeed(expandCompact(data)), civs, regions: data.regions ?? [] }
       }
       // Legacy format: a plain array of HistEvent objects.
       if (Array.isArray(data) && data.length > 0 && data.every(isValidEvent)) {
-        return mergeWithSeed(data as HistEvent[])
+        return { events: mergeWithSeed(data as HistEvent[]), civs: [], regions: [] }
       }
     }
   } catch {
     // Offline or no generated dataset — fall back to the seed.
   }
-  return EVENTS
+  return { events: EVENTS, civs: [], regions: [] }
 }

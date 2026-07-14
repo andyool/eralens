@@ -707,7 +707,7 @@ button {
 /* ── Breadcrumb ────────────────────────────────────────────────────────── */
 .breadcrumb {
   position: absolute;
-  top: 48px;
+  top: 116px; /* below the era rail + the two filter rails */
   left: 12px;
   right: 12px;
   display: flex;
@@ -818,6 +818,42 @@ button {
   text-transform: uppercase;
   color: var(--text-faint);
   padding: 0 2px 0 8px;
+}
+
+/* ── Filter rails (civilisations, regions, topics) ─────────────────────── */
+.filter-rail {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  z-index: 12;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 14px, #000 calc(100% - 14px), transparent);
+}
+.filter-rail::-webkit-scrollbar {
+  display: none;
+}
+.filter-rail .era-chip {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+.civ-rail {
+  top: 48px;
+}
+.more-rail {
+  top: 82px;
+}
+.clear-chip {
+  border-color: rgba(255, 123, 84, 0.55);
+  color: #ffb49e;
+}
+.clear-chip:hover {
+  background: rgba(255, 123, 84, 0.15);
+  color: #ffd0c2;
 }
 
 /* ── Navigator ─────────────────────────────────────────────────────────── */
@@ -980,7 +1016,7 @@ button {
 /* Focus mode banner — exploring one event's own timeline */
 .focus-banner {
   position: absolute;
-  top: 58px;
+  top: 150px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;

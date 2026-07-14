@@ -96,6 +96,10 @@ export interface HistEvent {
   wikidataId?: string
   /** Explicit curated relationships (causal / movement). */
   relations?: EventRelation[]
+  /** Bitmask over the loaded civilization definitions (see data/events.ts). */
+  civMask?: number
+  /** Bitmask over the loaded region definitions. */
+  regionMask?: number
 
   // ── Containment hierarchy (moments ⊂ events ⊂ periods ⊂ eras) ──────────
   /** Id of the containing event/period/war. Absent = a top-level node. */

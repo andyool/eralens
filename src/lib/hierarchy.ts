@@ -16,6 +16,9 @@ export interface HNode {
   spanEnd: number
   /** Union of categories across the subtree — lets filters see into containers. */
   subtreeCats: Set<CategoryId>
+  /** Union of civilization/region bitmasks across the subtree. */
+  subtreeCivMask: number
+  subtreeRegionMask: number
 }
 
 export interface Forest {
@@ -99,6 +102,8 @@ function makeNode(ev: HistEvent): HNode {
     spanStart: decimalYear(ev),
     spanEnd: decimalYear(ev),
     subtreeCats: new Set(),
+    subtreeCivMask: 0,
+    subtreeRegionMask: 0,
   }
 }
 
@@ -179,6 +184,8 @@ export function buildForest(events: HistEvent[], opts?: { cluster?: boolean }): 
   // Spans + counts + subtree categories (bottom-up).
   const compute = (node: HNode): void => {
     const cats = new Set<CategoryId>(node.ev.categories)
+    let civ = node.ev.civMask ?? 0
+    let region = node.ev.regionMask ?? 0
     let count = 0
     for (const c of node.children) {
       compute(c)
@@ -186,8 +193,12 @@ export function buildForest(events: HistEvent[], opts?: { cluster?: boolean }): 
       node.spanEnd = Math.max(node.spanEnd, c.spanEnd)
       count += c.descendantCount + 1
       for (const cat of c.subtreeCats) cats.add(cat)
+      civ |= c.subtreeCivMask
+      region |= c.subtreeRegionMask
     }
     node.subtreeCats = cats
+    node.subtreeCivMask = civ
+    node.subtreeRegionMask = region
     node.descendantCount = count
   }
   for (const r of roots) compute(r)

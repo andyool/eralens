@@ -61,6 +61,79 @@ function typesToMask(typesStr) {
   return mask
 }
 
+// ── Civilizations & regions ──────────────────────────────────────────────
+// An event belongs to a civilization when its Wikidata country (P17) or its
+// title matches. Country labels are the strong signal (a battle in "Han
+// dynasty" is Chinese whatever its name says); titles catch the rest.
+// Bit order matters — the loader maps bits by index from the file header.
+const CIVS = [
+  { id: 'rome', label: 'Rome', start: -753, end: 476, reCountry: /roman empire|roman republic|ancient rome|roman kingdom/i, reTitle: /\broman\b|\brome\b|\bpunic\b|caesar|\blatium/i },
+  { id: 'greece', label: 'Ancient Greece', start: -800, end: -146, reCountry: /ancient greece|classical athens|sparta|macedonia \(ancient/i, reTitle: /\bgreek|\bgreece|athens|sparta|hellenistic|macedon|peloponnes/i },
+  { id: 'egypt', label: 'Ancient Egypt', start: -3100, end: -30, reCountry: /ancient egypt|ptolemaic/i, reTitle: /\begypt|pharaoh|ptolema/i },
+  { id: 'mesopotamia', label: 'Mesopotamia', start: -3500, end: -539, reCountry: /assyria|babylon|sumer|akkad|mesopotam/i, reTitle: /mesopotam|babylon|assyria|sumer|akkad|hittite/i },
+  { id: 'persia', label: 'Persia & Iran', start: -550, end: 2026, reCountry: /achaemenid|sasanian|parthian|safavid|qajar|\biran\b|persia/i, reTitle: /\bpersia|achaemenid|sasanian|parthian|\biran(ian)?\b/i },
+  { id: 'byzantium', label: 'Byzantium', start: 330, end: 1453, reCountry: /byzantine/i, reTitle: /byzantin|constantinople/i },
+  { id: 'islamic', label: 'Islamic World', start: 622, end: 1517, reCountry: /caliphate|umayyad|abbasid|al-andalus|fatimid|seljuk|mamluk/i, reTitle: /caliph|umayyad|abbasid|al-andalus|islamic|\bmuslim|moorish|saracen/i },
+  { id: 'ottoman', label: 'Ottoman Empire', start: 1299, end: 1922, reCountry: /ottoman/i, reTitle: /ottoman/i },
+  { id: 'china', label: 'China', start: -2070, end: 2026, reCountry: /china|chinese|han dynasty|tang dynasty|song dynasty|yuan dynasty|ming dynasty|qing dynasty|qin dynasty|zhou dynasty|sui dynasty|jin dynasty|wei dynasty|shang dynasty/i, reTitle: /\bchina\b|\bchinese\b/i },
+  { id: 'japan', label: 'Japan', start: 250, end: 2026, reCountry: /japan/i, reTitle: /\bjapan(ese)?\b/i },
+  { id: 'korea', label: 'Korea', start: -57, end: 2026, reCountry: /korea|joseon|goryeo|silla|goguryeo|baekje/i, reTitle: /\bkorea(n)?\b|joseon|goryeo/i },
+  { id: 'india', label: 'India & South Asia', start: -1500, end: 2026, reCountry: /\bindia\b|mughal|maurya|british raj|maratha|gupta|delhi sultanate|pakistan|bangladesh|sri lanka/i, reTitle: /\bindia(n)?\b|mughal|maratha|bengal/i },
+  { id: 'mongols', label: 'Mongol Empire', start: 1206, end: 1368, reCountry: /mongol empire|golden horde|ilkhanate|yuan dynasty/i, reTitle: /\bmongol/i },
+  { id: 'vikings', label: 'Vikings & Norse', start: 793, end: 1066, reCountry: /viking/i, reTitle: /viking|\bnorse|norsemen|danelaw/i },
+  { id: 'hre', label: 'Holy Roman Empire', start: 800, end: 1806, reCountry: /holy roman empire/i, reTitle: /holy roman/i },
+  { id: 'france', label: 'France', start: 481, end: 2026, reCountry: /\bfrance\b|french (first |second |third |fourth |fifth )?(empire|republic|kingdom)|west francia|francia/i, reTitle: /\bfrance\b|\bfrench\b|napoleon/i },
+  { id: 'britain', label: 'Britain & Empire', start: 927, end: 2026, reCountry: /united kingdom|great britain|kingdom of england|kingdom of scotland|british empire|british raj|british america/i, reTitle: /\bbritish\b|\bbritain\b|\bengland\b|\benglish\b|\bscotland|\bwales\b/i },
+  { id: 'spain', label: 'Spain & Portugal', start: 718, end: 2026, reCountry: /\bspain\b|spanish empire|castile|aragon|portugal|portuguese empire|al-andalus/i, reTitle: /\bspain\b|\bspanish\b|\bportug/i },
+  { id: 'italy', label: 'Italian States', start: 476, end: 2026, reCountry: /\bitaly\b|kingdom of italy|papal states|republic of venice|republic of florence|republic of genoa|duchy of milan|kingdom of naples|sardinia/i, reTitle: /\bital(y|ian)\b|venice|venetian|florence|\bgenoa|\bmilan|\bnaples/i },
+  { id: 'germany', label: 'Germany & Prussia', start: 962, end: 2026, reCountry: /germany|prussia|german empire|weimar|german confederation|bavaria|saxony|brandenburg/i, reTitle: /\bgerman(y)?\b|prussia(n)?\b|bavaria/i },
+  { id: 'russia', label: 'Russia & USSR', start: 862, end: 2026, reCountry: /russia|soviet union|russian empire|tsardom|kievan rus|grand duchy of moscow|muscovy/i, reTitle: /\brussia(n)?\b|soviet|\bussr\b|kievan/i },
+  { id: 'usa', label: 'United States', start: 1607, end: 2026, reCountry: /united states|confederate states|thirteen colonies|british america/i, reTitle: /\bunited states\b|\bu\.s\.|\bamerican (revolution|civil war)/i },
+  { id: 'precolumbian', label: 'Aztec · Maya · Inca', start: -1500, end: 1533, reCountry: /aztec|inca empire|maya/i, reTitle: /aztec|\bmaya(n)?\b|\binca(n)?\b|mesoameric|tenochtitlan/i },
+  { id: 'ottomansuccessors', label: 'Middle East (modern)', start: 1918, end: 2026, reCountry: /\biraq\b|\bsyria\b|\bisrael\b|palestine|lebanon|jordan|saudi arabia|\byemen\b|\bturkey\b|\begypt\b|\bkuwait|\bqatar|emirates|bahrain|\boman\b/i, reTitle: /\biraq(i)?\b|\bsyria(n)?\b|\bisrael(i)?\b|palestin|\bleban|\bsaudi\b|\byemen|\bturkey\b|turkish/i },
+]
+
+const REGIONS = [
+  { id: 'europe', label: 'Europe', reCountry: /france|germany|italy|spain|portugal|united kingdom|great britain|england|scotland|ireland|wales|netherlands|belgium|austria|hungary|poland|russia|sweden|norway|denmark|finland|greece|roman|byzantine|holy roman|prussia|soviet|czech|slovak|yugoslav|switzerland|ukraine|romania|bulgaria|serbia|croatia|bosnia|albania|lithuania|latvia|estonia|iceland|luxembourg|monaco|malta|venice|florence|genoa|papal|castile|aragon|francia|viking|kievan/i },
+  { id: 'asia', label: 'Asia & Pacific', reCountry: /china|chinese|dynasty|japan|korea|joseon|goryeo|india|mughal|maurya|raj|mongol|vietnam|thailand|siam|indonesia|philippines|malaysia|myanmar|burma|pakistan|bangladesh|afghanistan|kazakh|uzbek|nepal|sri lanka|cambodia|laos|taiwan|singapore|australia|new zealand|fiji|papua/i },
+  { id: 'mideast', label: 'Middle East', reCountry: /ottoman|iran|persia|achaemenid|sasanian|parthian|safavid|iraq|syria|israel|palestine|lebanon|jordan|saudi|yemen|turkey|kuwait|qatar|emirates|bahrain|oman|caliphate|umayyad|abbasid|seljuk|assyria|babylon|sumer|akkad|mesopotam|hittite|phoenicia|byzantine/i },
+  { id: 'africa', label: 'Africa', reCountry: /egypt|morocco|algeria|tunisia|libya|ethiopia|nigeria|ghana|kenya|south africa|sudan|congo|carthage|mali|songhai|zulu|rhodesia|angola|mozambique|uganda|tanzania|zimbabwe|senegal|somalia|madagascar|cameroon|ptolemaic/i },
+  { id: 'americas', label: 'Americas', reCountry: /united states|confederate|thirteen colonies|canada|mexico|brazil|argentina|chile|peru|colombia|venezuela|cuba|haiti|bolivia|ecuador|uruguay|paraguay|guatemala|nicaragua|panama|jamaica|aztec|inca|maya|new spain|new france|british america/i },
+]
+
+// Rough continent bounding boxes for events that have coordinates but whose
+// country didn't match a region rule. Checked in order; first hit wins.
+function regionFromCoords(lon, lat) {
+  if (lon >= -170 && lon <= -30) return 'americas'
+  if (lat <= 0 && lon >= 110 && lon <= 180) return 'asia'
+  if (lat >= 12 && lat <= 42 && lon >= 26 && lon <= 63) return 'mideast'
+  if (lat >= -35 && lat <= 32 && lon >= -18 && lon <= 52) return 'africa'
+  if (lat >= 36 && lat <= 72 && lon >= -25 && lon <= 60) return 'europe'
+  if (lon > 60 || (lat > 0 && lon > 45)) return 'asia'
+  return null
+}
+
+function civMaskOf(title, countries) {
+  let mask = 0
+  for (let i = 0; i < CIVS.length; i++) {
+    const civ = CIVS[i]
+    if ((countries && civ.reCountry.test(countries)) || civ.reTitle.test(title)) mask |= 1 << i
+  }
+  return mask
+}
+
+function regionMaskOf(countries, lon, lat) {
+  let mask = 0
+  for (let i = 0; i < REGIONS.length; i++) {
+    if (countries && REGIONS[i].reCountry.test(countries)) mask |= 1 << i
+  }
+  if (mask === 0 && (lon !== 0 || lat !== 0)) {
+    const id = regionFromCoords(lon, lat)
+    if (id) mask |= 1 << REGIONS.findIndex((r) => r.id === id)
+  }
+  return mask
+}
+
 // ── Time helpers ─────────────────────────────────────────────────────────
 
 /** Decimal year → ISO dateTime, consistent on both sides of a split. */
@@ -105,7 +178,8 @@ SELECT ?item ?itemLabel ?date ?coord ?links ?enTitle
        (GROUP_CONCAT(DISTINCT ?partOf; separator="|") AS ?parents)
        (GROUP_CONCAT(DISTINCT ?causeQ; separator="|") AS ?causes)
        (GROUP_CONCAT(DISTINCT ?effectQ; separator="|") AS ?effects)
-       (GROUP_CONCAT(DISTINCT ?nextQ; separator="|") AS ?nexts) WHERE {
+       (GROUP_CONCAT(DISTINCT ?nextQ; separator="|") AS ?nexts)
+       (GROUP_CONCAT(DISTINCT ?countryLabel; separator="|") AS ?countries) WHERE {
   {
     SELECT DISTINCT ?item ?date ?links WHERE {
       ?item wdt:${prop} ?date .
@@ -131,6 +205,10 @@ SELECT ?item ?itemLabel ?date ?coord ?links ?enTitle
   OPTIONAL { ?item wdt:P828|wdt:P1478|wdt:P1537 ?causeQ . }
   OPTIONAL { ?item wdt:P1542|wdt:P1536 ?effectQ . }
   OPTIONAL { ?item wdt:P156 ?nextQ . }
+  OPTIONAL {
+    ?item wdt:P17 ?country .
+    ?country rdfs:label ?countryLabel . FILTER(LANG(?countryLabel) = "en")
+  }
   OPTIONAL {
     ?article schema:about ?item ;
              schema:isPartOf <https://en.wikipedia.org/> ;
@@ -294,6 +372,7 @@ async function main() {
     const end = row.endDate?.value ? parseDate(row.endDate.value) : null
     const enTitle = row.enTitle?.value ? row.enTitle.value.replace(/ /g, '_') : null
     const derivedTitle = title.replace(/ /g, '_')
+    const countries = row.countries?.value ?? ''
 
     raw.push({
       qid,
@@ -313,6 +392,8 @@ async function main() {
       wiki: enTitle == null ? 0 : enTitle === derivedTitle ? 1 : enTitle,
       lon,
       lat,
+      civMask: civMaskOf(title, countries),
+      regionMask: regionMaskOf(countries, lon, lat),
     })
   }
 
@@ -330,7 +411,7 @@ async function main() {
     return [
       r.qid, r.title, r.year, r.month, r.day, r.endYear, r.sig, r.mask, r.wiki,
       r.lon, r.lat, parent, causes.length ? causes : 0, effects.length ? effects : 0,
-      nexts.length ? nexts : 0,
+      nexts.length ? nexts : 0, r.civMask, r.regionMask,
     ]
   })
   events.sort((a, b) => a[2] - b[2])
@@ -343,9 +424,13 @@ async function main() {
   const payload = {
     format: 'eralens-compact-1',
     categories: CATEGORY_ORDER,
+    // Civ/region definitions ride along so the app renders filter chips and
+    // tags seed events without duplicating the tables. `re` = title regex.
+    civs: CIVS.map(({ id, label, start, end, reTitle }) => ({ id, label, start, end, re: reTitle.source })),
+    regions: REGIONS.map(({ id, label }) => ({ id, label })),
     // Row layout: [qid, title, year, month, day, endYear, significance,
     //              categoryMask, wiki, lon, lat, parentQid, causes[], effects[],
-    //              nexts[]]
+    //              nexts[], civMask, regionMask]
     events,
   }
   await writeFile(outPath, JSON.stringify(payload))

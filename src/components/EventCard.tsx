@@ -135,9 +135,9 @@ export default function EventCard({ event, events, forest, onSelectEvent, onDril
 
         {children.length > 0 && (
           <div className="card-section">
-            <h3>Contains {node!.descendantCount} moments</h3>
+            <h3>Contains {node!.descendantCount} events</h3>
             <button className="zoom-in-btn" onClick={() => { onDrill(event.id); onClose() }}>
-              ⤢ Zoom in to explore
+              ⤵ Open its timeline — only these {node!.descendantCount} events on the map
             </button>
             {children.slice(0, 8).map((c) => (
               <button key={c.ev.id} className="rel-item" onClick={() => onSelectEvent(c.ev.id)}>

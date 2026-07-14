@@ -15,11 +15,15 @@ const GROUP_LABEL: Record<Era['group'], string> = {
   cultural: 'Civilisations',
 }
 
+// Civilisation chips moved to FilterRails, where they genuinely filter —
+// here they would only zoom to a date range, which reads as a lie.
+const RAIL_ERAS = ERAS.filter((e) => e.group !== 'cultural')
+
 export default function EraRail({ activeEraId, onSelect }: Props) {
   let lastLabel = ''
   return (
     <nav className="era-rail" aria-label="Jump to a historical era">
-      {ERAS.map((era) => {
+      {RAIL_ERAS.map((era) => {
         const label = GROUP_LABEL[era.group]
         const showLabel = label !== lastLabel
         lastLabel = label

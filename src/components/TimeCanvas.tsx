@@ -331,7 +331,9 @@ export default function TimeCanvas({
         const { x, y } = localXY(e)
         const radius = e.pointerType === 'touch' ? 34 : 24
         const best = fieldRef.current?.pick(x, y, radius)
-        if (best?.isAggregate) {
+        // Only synthetic time buckets zoom straight in — clicking a real event
+        // (container or not) opens its card, which offers "open its timeline".
+        if (best?.isAggregate && best.id.startsWith('t:')) {
           onDrill(best.id)
           setHoverId(null)
           setChip(null)
@@ -415,7 +417,7 @@ export default function TimeCanvas({
             <span className="hc-dot" style={{ background: categoryColor(hoverEvent.categories[0]) }} />
             {compactDate(hoverEvent)}
             {hoverNode && hoverNode.children.length > 0 && (
-              <span className="hc-contains">· contains {hoverNode.descendantCount} · click to open</span>
+              <span className="hc-contains">· contains {hoverNode.descendantCount} events</span>
             )}
             {(() => {
               const links = causalOf(hoverEvent.id)
