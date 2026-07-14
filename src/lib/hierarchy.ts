@@ -1,8 +1,8 @@
-import type { HistEvent, EventTier } from './types'
+import type { HistEvent, EventTier, CategoryId } from './types'
 
 /**
  * A node in the containment forest. Every event is a node; a node with children
- * is a "container" (a war, an era, a program) that can be drilled into.
+ * is a "container" (a war, an era, a time bucket) that can be drilled into.
  */
 export interface HNode {
   ev: HistEvent
@@ -14,6 +14,8 @@ export interface HNode {
   /** Oldest / newest decimal-year across this node's whole subtree. */
   spanStart: number
   spanEnd: number
+  /** Union of categories across the subtree — lets filters see into containers. */
+  subtreeCats: Set<CategoryId>
 }
 
 export interface Forest {
@@ -44,22 +46,68 @@ export function tierOf(node: HNode): EventTier {
   return node.parent ? 'moment' : 'event'
 }
 
-/** Build the containment forest and precompute spans + descendant counts. */
-export function buildForest(events: HistEvent[]): Forest {
-  const map = new Map<string, HNode>()
-  for (const ev of events) {
-    map.set(ev.id, {
-      ev,
-      parent: null,
-      children: [],
-      depth: 0,
-      descendantCount: 0,
-      spanStart: decimalYear(ev),
-      spanEnd: decimalYear(ev),
-    })
-  }
+export function isTimeBucket(node: HNode): boolean {
+  return node.ev.id.startsWith('t:')
+}
 
-  const roots: HNode[] = []
+// ── Time-bucket auto-clustering ──────────────────────────────────────────
+// Events older than this stay at the top level (deep time is sparse + iconic).
+const RECORDED_MIN = -10000
+
+function ordinal(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd']
+  const v = n % 100
+  return n + (s[(v - 20) % 10] || s[v] || s[0])
+}
+function millLabel(m: number): string {
+  return m >= 0 ? `${ordinal(m / 1000 + 1)} millennium` : `${ordinal(-m / 1000)} millennium BCE`
+}
+function centLabel(c: number): string {
+  return c >= 0 ? `${ordinal(c / 100 + 1)} century` : `${ordinal(-c / 100)} century BCE`
+}
+
+interface BucketSpec {
+  level: 'mill' | 'cent' | 'dec'
+  key: number
+  start: number
+  end: number
+  title: string
+}
+
+function bucketChain(year: number): BucketSpec[] {
+  if (year < RECORDED_MIN) return []
+  const mk = Math.floor(year / 1000) * 1000
+  const ck = Math.floor(year / 100) * 100
+  const chain: BucketSpec[] = [
+    { level: 'mill', key: mk, start: mk, end: mk + 999, title: millLabel(mk) },
+    { level: 'cent', key: ck, start: ck, end: ck + 99, title: centLabel(ck) },
+  ]
+  if (year >= 1000) {
+    const dk = Math.floor(year / 10) * 10
+    chain.push({ level: 'dec', key: dk, start: dk, end: dk + 9, title: `${dk}s` })
+  }
+  return chain
+}
+
+function makeNode(ev: HistEvent): HNode {
+  return {
+    ev,
+    parent: null,
+    children: [],
+    depth: 0,
+    descendantCount: 0,
+    spanStart: decimalYear(ev),
+    spanEnd: decimalYear(ev),
+    subtreeCats: new Set(),
+  }
+}
+
+/** Build the containment forest, optionally auto-clustering into time buckets. */
+export function buildForest(events: HistEvent[], opts?: { cluster?: boolean }): Forest {
+  const map = new Map<string, HNode>()
+  for (const ev of events) map.set(ev.id, makeNode(ev))
+
+  let roots: HNode[] = []
   for (const node of map.values()) {
     const pid = node.ev.parentId
     const parent = pid ? map.get(pid) : undefined
@@ -71,29 +119,122 @@ export function buildForest(events: HistEvent[]): Forest {
     }
   }
 
+  if (opts?.cluster) {
+    const buckets = new Map<string, HNode>()
+    const getBucket = (spec: BucketSpec): HNode => {
+      const id = `t:${spec.level}:${spec.key}`
+      let n = buckets.get(id)
+      if (!n) {
+        n = makeNode({
+          id,
+          title: spec.title,
+          year: spec.start,
+          endYear: spec.end,
+          precision: spec.level === 'dec' ? 'decade' : 'century',
+          type: 'event',
+          tier: spec.level === 'mill' ? 'era' : 'period',
+          categories: [],
+          significance: 55,
+          description: `Events from the ${spec.title}.`,
+        })
+        buckets.set(id, n)
+        map.set(id, n)
+      }
+      return n
+    }
+
+    const newRoots: HNode[] = []
+    for (const root of roots) {
+      const chain = bucketChain(root.ev.year)
+      if (chain.length === 0) {
+        newRoots.push(root)
+        continue
+      }
+      let parentNode: HNode | null = null
+      for (const spec of chain) {
+        const b = getBucket(spec)
+        if (parentNode && b.parent !== parentNode) {
+          b.parent = parentNode
+          parentNode.children.push(b)
+        }
+        parentNode = b
+      }
+      root.parent = parentNode
+      parentNode!.children.push(root)
+    }
+    for (const b of buckets.values()) if (!b.parent) newRoots.push(b)
+    roots = collapseSingletonBuckets(newRoots)
+  }
+
   // Depth (top-down) + order children by time.
   const setDepth = (node: HNode, d: number) => {
     node.depth = d
-    node.children.sort((a, b) => decimalYear(a.ev) - decimalYear(b.ev) || (a.ev.sequence ?? 0) - (b.ev.sequence ?? 0))
+    node.children.sort(
+      (a, b) => decimalYear(a.ev) - decimalYear(b.ev) || (a.ev.sequence ?? 0) - (b.ev.sequence ?? 0),
+    )
     for (const c of node.children) setDepth(c, d + 1)
   }
   for (const r of roots) setDepth(r, 0)
 
-  // Spans + counts (bottom-up).
+  // Spans + counts + subtree categories (bottom-up).
   const compute = (node: HNode): void => {
+    const cats = new Set<CategoryId>(node.ev.categories)
     let count = 0
     for (const c of node.children) {
       compute(c)
       node.spanStart = Math.min(node.spanStart, c.spanStart)
       node.spanEnd = Math.max(node.spanEnd, c.spanEnd)
       count += c.descendantCount + 1
+      for (const cat of c.subtreeCats) cats.add(cat)
     }
+    node.subtreeCats = cats
     node.descendantCount = count
   }
   for (const r of roots) compute(r)
 
   roots.sort((a, b) => a.spanStart - b.spanStart)
   return { map, roots }
+}
+
+/** Collapse time-bucket containers that hold only a single child (keeps the tree tidy). */
+function collapseSingletonBuckets(roots: HNode[]): HNode[] {
+  const collapse = (node: HNode) => {
+    let changed = true
+    while (changed) {
+      changed = false
+      const next: HNode[] = []
+      for (const c of node.children) {
+        if (c.ev.id.startsWith('t:') && c.children.length === 1) {
+          const g = c.children[0]
+          g.parent = node
+          next.push(g)
+          changed = true
+        } else {
+          next.push(c)
+        }
+      }
+      node.children = next
+    }
+    for (const c of node.children) collapse(c)
+  }
+  let changedR = true
+  while (changedR) {
+    changedR = false
+    const nr: HNode[] = []
+    for (const r of roots) {
+      if (r.ev.id.startsWith('t:') && r.children.length === 1) {
+        const g = r.children[0]
+        g.parent = null
+        nr.push(g)
+        changedR = true
+      } else {
+        nr.push(r)
+      }
+    }
+    roots = nr
+  }
+  for (const r of roots) collapse(r)
+  return roots
 }
 
 export function ancestorsOf(node: HNode): HNode[] {
@@ -107,9 +248,7 @@ export function ancestorsOf(node: HNode): HNode[] {
 }
 
 export interface LodCallbacks {
-  /** Does this node's subtree intersect the current view at all? */
   intersects: (node: HNode) => boolean
-  /** Should this container be opened (show children) rather than shown as one dot? */
   expandable: (node: HNode) => boolean
 }
 
@@ -117,7 +256,7 @@ export interface LodCallbacks {
  * Level-of-detail selection. Walks the forest top-down: a container whose span
  * is wide enough on screen is "opened" into its children; otherwise it is
  * rendered as a single aggregate dot. This is the semantic zoom that makes the
- * cloud step down from wars → battles → moments as you zoom in.
+ * cloud step down from centuries → wars → battles → moments as you zoom in.
  */
 export function selectVisibleNodes(roots: HNode[], cb: LodCallbacks): HNode[] {
   const out: HNode[] = []

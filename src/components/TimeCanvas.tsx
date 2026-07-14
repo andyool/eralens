@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { HistEvent, TimeView } from '../lib/types'
 import { ParticleField } from '../lib/particleField'
-import type { Forest } from '../lib/hierarchy'
+import type { Forest, HNode } from '../lib/hierarchy'
 import { panView, zoomView } from '../lib/timeMapping'
 import { compactDate } from '../lib/dateFormat'
 import { categoryColor } from '../data/categories'
@@ -12,7 +12,8 @@ interface Props {
   forest: Forest
   view: TimeView
   onViewChange: (v: TimeView) => void
-  predicate: (ev: HistEvent) => boolean
+  nodePredicate: (node: HNode) => boolean
+  eventMatches: (ev: HistEvent) => boolean
   selectedId: string | null
   onSelect: (id: string | null) => void
   onDrill: (id: string) => void
@@ -25,7 +26,8 @@ export default function TimeCanvas({
   forest,
   view,
   onViewChange,
-  predicate,
+  nodePredicate,
+  eventMatches,
   selectedId,
   onSelect,
   onDrill,
@@ -42,9 +44,9 @@ export default function TimeCanvas({
   const visibleSorted = useMemo(
     () =>
       events
-        .filter((e) => !e.illustrative && e.year >= view.startYear && e.year <= view.endYear && predicate(e))
+        .filter((e) => e.tier !== 'moment' && e.year >= view.startYear && e.year <= view.endYear && eventMatches(e))
         .sort((a, b) => a.year - b.year),
-    [events, view, predicate],
+    [events, view, eventMatches],
   )
 
   const emphasisId = hoverId ?? selectedId
@@ -64,7 +66,7 @@ export default function TimeCanvas({
     fieldRef.current = field
     field.setReducedMotion(reducedMotion)
     field.setForest(forestRef.current)
-    field.setFilter(predicate)
+    field.setFilter(nodePredicate)
     field.setView(view)
     field.start()
 
@@ -87,8 +89,8 @@ export default function TimeCanvas({
     fieldRef.current?.setView(view)
   }, [view])
   useEffect(() => {
-    fieldRef.current?.setFilter(predicate)
-  }, [predicate])
+    fieldRef.current?.setFilter(nodePredicate)
+  }, [nodePredicate])
   useEffect(() => {
     fieldRef.current?.setReducedMotion(reducedMotion)
   }, [reducedMotion])
@@ -104,7 +106,7 @@ export default function TimeCanvas({
     }
     field.setEmphasis(emphasisId)
     const ev = forest.map.get(emphasisId)?.ev
-    if (!ev?.wikiTitle || ev.illustrative) return
+    if (!ev?.wikiTitle) return
     let cancelled = false
     fetchWikiSummary(ev).then((s) => {
       if (cancelled || !s?.thumbnail) return
@@ -309,10 +311,7 @@ export default function TimeCanvas({
           }}
           aria-hidden
         >
-          <div className="hc-title">
-            {hoverEvent.title}
-            {hoverEvent.illustrative && <span className="hc-badge">illustrative</span>}
-          </div>
+          <div className="hc-title">{hoverEvent.title}</div>
           <div className="hc-meta">
             <span className="hc-dot" style={{ background: categoryColor(hoverEvent.categories[0]) }} />
             {compactDate(hoverEvent)}

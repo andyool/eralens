@@ -32,7 +32,7 @@ interface Particle {
   tau: number
 }
 
-type FilterPredicate = (ev: HistEvent) => boolean
+type FilterPredicate = (node: HNode) => boolean
 
 const BUCKET_PX = 7
 const BASE_SPACING = 8
@@ -184,7 +184,7 @@ export class ParticleField {
 
     const laid: Particle[] = []
     for (const node of visibleNodes) {
-      if (!this.predicate(node.ev)) continue
+      if (!this.predicate(node)) continue
       const p = this.particles.get(node.ev.id)
       if (!p) continue
       p.visible = true

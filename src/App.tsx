@@ -4,7 +4,6 @@ import { loadEvents, EVENTS } from './data/events'
 import { CATEGORIES } from './data/categories'
 import { MIN_YEAR, MAX_YEAR, viewAround, viewFromSpan, viewMidYear } from './lib/timeMapping'
 import { buildForest, type HNode } from './lib/hierarchy'
-import { generateIllustrative } from './lib/illustrative'
 import { discover, type LuckyMode } from './lib/discover'
 import { sound } from './lib/sound'
 import { usePrefersReducedMotion, useMediaQuery } from './hooks'
@@ -30,26 +29,21 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [listView, setListView] = useState(false)
   const [soundOn, setSoundOn] = useState(false)
-  const [illustrativeOn, setIllustrativeOn] = useState(true)
   const [toast, setToast] = useState<{ title: string; desc: string; color: string } | null>(null)
   const [hintDone, setHintDone] = useState(false)
 
   const reducedMotion = usePrefersReducedMotion()
   const isMobile = useMediaQuery('(max-width: 860px)')
 
-  // Real events + optional illustrative sub-moments for density/drill-down.
-  const displayEvents = useMemo(
-    () => (illustrativeOn ? events.concat(generateIllustrative(events)) : events),
-    [events, illustrativeOn],
-  )
-  const forest = useMemo(() => buildForest(displayEvents), [displayEvents])
+  // Real events, auto-clustered into millennium → century → decade → event →
+  // moment containers so everything steps down cleanly.
+  const forest = useMemo(() => buildForest(events, { cluster: true }), [events])
   const containers = useMemo(
     () => [...forest.map.values()].filter((n) => n.children.length > 0),
     [forest],
   )
-  const byId = useMemo(() => new Map(displayEvents.map((e) => [e.id, e])), [displayEvents])
+  const byId = useMemo(() => new Map(events.map((e) => [e.id, e])), [events])
 
-  // Load the (optionally generated) dataset; fall back to the seed.
   useEffect(() => {
     let cancelled = false
     loadEvents().then((data) => {
@@ -81,17 +75,24 @@ export default function App() {
     return () => clearTimeout(t)
   }, [toast])
 
-  const predicate = useMemo(() => {
+  // Node predicate lets filters see through containers (a war shows if any of
+  // its battles match); the event predicate drives list/keyboard nav.
+  const nodePredicate = useMemo(() => {
+    if (activeCats.size === 0) return () => true
+    return (node: HNode) => {
+      for (const c of node.subtreeCats) if (activeCats.has(c)) return true
+      return false
+    }
+  }, [activeCats])
+  const eventMatches = useMemo(() => {
     if (activeCats.size === 0) return () => true
     return (ev: HistEvent) => ev.categories.some((c) => activeCats.has(c))
   }, [activeCats])
 
-  // Counts reflect real (non-illustrative) events in the visible range.
   const counts = useMemo(() => {
     const m = new Map<CategoryId, number>()
     for (const cat of CATEGORIES) m.set(cat.id, 0)
     for (const ev of events) {
-      if (ev.illustrative) continue
       if (ev.year < view.startYear || ev.year > view.endYear) continue
       for (const c of ev.categories) m.set(c, (m.get(c) ?? 0) + 1)
     }
@@ -101,13 +102,11 @@ export default function App() {
   const visibleSorted = useMemo(
     () =>
       events
-        .filter((e) => !e.illustrative && e.year >= view.startYear && e.year <= view.endYear && predicate(e))
+        .filter((e) => e.tier !== 'moment' && e.year >= view.startYear && e.year <= view.endYear && eventMatches(e))
         .sort((a, b) => a.year - b.year),
-    [events, view, predicate],
+    [events, view, eventMatches],
   )
 
-  // The deepest container whose span brackets the view's midpoint = "where you
-  // are" — robust to the padding drilling adds around a node.
   const focusNode: HNode | null = useMemo(() => {
     const mid = viewMidYear(view)
     let best: HNode | null = null
@@ -154,7 +153,6 @@ export default function App() {
     [byId, soundOn, isMobile, updateUrl],
   )
 
-  // Zoom into a container's span (the "step down").
   const drill = useCallback(
     (id: string) => {
       const node = forest.map.get(id)
@@ -195,7 +193,7 @@ export default function App() {
 
   const lucky = useCallback(
     (mode: LuckyMode) => {
-      const ev = discover(events.filter((e) => !e.illustrative), mode, new Date())
+      const ev = discover(events.filter((e) => e.tier !== 'moment'), mode, new Date())
       if (!ev) return
       setViewState(viewAround(ev.year))
       setActiveEraId(null)
@@ -207,20 +205,6 @@ export default function App() {
     },
     [events, soundOn, updateUrl],
   )
-
-  const toggleIllustrative = useCallback(() => {
-    setIllustrativeOn((on) => {
-      const next = !on
-      if (next) {
-        setToast({
-          title: 'Illustrative detail on',
-          desc: 'Placeholder sub-moments added so you can zoom into finer detail. These are not sourced facts — run the Wikidata fetch for real depth.',
-          color: '#f4a259',
-        })
-      }
-      return next
-    })
-  }, [])
 
   return (
     <div className="app">
@@ -247,17 +231,6 @@ export default function App() {
 
         <div className="header-actions">
           <Discover onPick={lucky} />
-          <button
-            className={`icon-btn ${illustrativeOn ? 'active' : ''}`}
-            aria-pressed={illustrativeOn}
-            onClick={toggleIllustrative}
-            title="Illustrative detail — placeholder sub-moments for density and drill-down"
-          >
-            <span className="glyph" aria-hidden>
-              ◎
-            </span>
-            <span className="hide-sm">Detail</span>
-          </button>
           <button
             className={`icon-btn ${listView ? 'active' : ''}`}
             aria-pressed={listView}
@@ -301,11 +274,12 @@ export default function App() {
             </div>
           ) : (
             <TimeCanvas
-              events={displayEvents}
+              events={events}
               forest={forest}
               view={view}
               onViewChange={setView}
-              predicate={predicate}
+              nodePredicate={nodePredicate}
+              eventMatches={eventMatches}
               selectedId={selectedId}
               onSelect={(id) => select(id, false)}
               onDrill={drill}
@@ -346,7 +320,7 @@ export default function App() {
         </div>
       </div>
 
-      <Navigator view={view} events={displayEvents} onChange={setView} />
+      <Navigator view={view} events={events} onChange={setView} />
     </div>
   )
 }

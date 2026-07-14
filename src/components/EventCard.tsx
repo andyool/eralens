@@ -23,7 +23,7 @@ export default function EventCard({ event, events, forest, onSelectEvent, onDril
   const accent = categoryColor(event.categories[0])
   const realById = useMemo(() => new Map(events.map((e) => [e.id, e])), [events])
   const groups = useMemo(
-    () => (event.illustrative ? [] : relatedEvents(event, events, realById, 4)),
+    () => relatedEvents(event, events, realById, 4),
     [event, events, realById],
   )
 
@@ -87,7 +87,13 @@ export default function EventCard({ event, events, forest, onSelectEvent, onDril
 
       <div className="card-body">
         {parent && (
-          <button className="card-parent" onClick={() => onSelectEvent(parent.ev.id)}>
+          <button
+            className="card-parent"
+            onClick={() => {
+              onDrill(parent.ev.id)
+              onClose()
+            }}
+          >
             ↑ Part of <strong>{parent.ev.title}</strong>
           </button>
         )}
@@ -97,13 +103,6 @@ export default function EventCard({ event, events, forest, onSelectEvent, onDril
           {event.location && <span>📍 {event.location}</span>}
           {event.people && event.people.length > 0 && <span>· {event.people.join(', ')}</span>}
         </div>
-
-        {event.illustrative && (
-          <div className="illustrative-note">
-            Illustrative placeholder — a sample sub-moment to demonstrate zooming in. Not a sourced
-            historical record.
-          </div>
-        )}
 
         <div className="card-tags">
           {event.categories.map((c) => (
