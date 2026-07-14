@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { HistEvent, TimeView } from '../lib/types'
 import {
-  MIN_YEAR,
-  MAX_YEAR,
   axisTicks,
+  clampView,
   fractionInView,
   panView,
+  xToYear,
   zoomView,
 } from '../lib/timeMapping'
 import { formatYear } from '../lib/dateFormat'
@@ -15,19 +15,35 @@ interface Props {
   view: TimeView
   events: HistEvent[]
   onChange: (view: TimeView) => void
+  /** A deliberate range selection — recorded in history for ↩ Back. */
+  onSelectRange: (view: TimeView) => void
+  onBack: () => void
+  canBack: boolean
+  onResetAll: () => void
 }
 
 /**
- * The bottom scale. It always shows the *visible* range — zoom into the 20th
- * century and it reads 1900 … 2000 — using the same warped time mapping as the
- * main canvas, so the density silhouette lines up column-for-column with the
- * dots above it. Drag to pan, wheel to zoom.
+ * The bottom scale — the primary way to pick a date range. It always shows the
+ * *visible* range (zoom into the 20th century and it reads 1900 … 2000) using
+ * the same warped time mapping as the main canvas, so the density silhouette
+ * lines up column-for-column with the dots above it.
+ *
+ * Drag across it to sweep out a range: release, and the view zooms to exactly
+ * that span. Scroll to zoom around the cursor. ↩ Back undoes jumps.
  */
-export default function Navigator({ view, events, onChange }: Props) {
+export default function Navigator({
+  view,
+  events,
+  onChange,
+  onSelectRange,
+  onBack,
+  canBack,
+  onResetAll,
+}: Props) {
   const [trackRef, size] = useResizeObserver<HTMLDivElement>()
   const histRef = useRef<HTMLCanvasElement | null>(null)
-  const [dragging, setDragging] = useState(false)
-  const drag = useRef<{ startX: number; startView: TimeView } | null>(null)
+  const [brush, setBrush] = useState<{ x0: number; x1: number } | null>(null)
+  const brushing = useRef(false)
 
   const width = size.width || 800
   const ticks = useMemo(() => axisTicks(view, width, 60), [view, width])
@@ -83,39 +99,64 @@ export default function Navigator({ view, events, onChange }: Props) {
     }
   }, [events, view, ticks, size.width, size.height])
 
+  const localX = useCallback(
+    (clientX: number) => {
+      const el = trackRef.current
+      if (!el) return 0
+      const rect = el.getBoundingClientRect()
+      return Math.max(0, Math.min(rect.width, clientX - rect.left))
+    },
+    [trackRef],
+  )
+
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
       e.preventDefault()
       ;(e.target as Element).setPointerCapture?.(e.pointerId)
-      drag.current = { startX: e.clientX, startView: view }
-      setDragging(true)
+      const x = localX(e.clientX)
+      brushing.current = true
+      setBrush({ x0: x, x1: x })
       document.body.style.userSelect = 'none'
     },
-    [view],
+    [localX],
   )
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
-      const d = drag.current
-      if (!d) return
-      const dx = e.clientX - d.startX
-      onChange(panView(d.startView, dx / Math.max(1, width)))
+      if (!brushing.current) return
+      const x = localX(e.clientX)
+      setBrush((b) => (b ? { ...b, x1: x } : b))
     },
-    [onChange, width],
+    [localX],
   )
 
-  const endDrag = useCallback(() => {
-    drag.current = null
-    setDragging(false)
-    document.body.style.userSelect = ''
-  }, [])
+  const endBrush = useCallback(
+    (e: React.PointerEvent) => {
+      if (!brushing.current) return
+      brushing.current = false
+      document.body.style.userSelect = ''
+      const x = localX(e.clientX)
+      setBrush((b) => {
+        if (b && Math.abs(x - b.x0) > 8) {
+          const lo = Math.min(b.x0, x)
+          const hi = Math.max(b.x0, x)
+          onSelectRange(
+            clampView({ startYear: xToYear(lo, view, width), endYear: xToYear(hi, view, width) }),
+          )
+        }
+        return null
+      })
+    },
+    [localX, onSelectRange, view, width],
+  )
 
   const onWheel = (e: React.WheelEvent) => {
     const el = trackRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
     const within = rect.width ? (e.clientX - rect.left) / rect.width : 0.5
-    const factor = e.deltaY > 0 ? 1.18 : 1 / 1.18
+    // Delta-proportional factor: gentle on trackpads, solid on wheel notches.
+    const factor = Math.exp(Math.max(-320, Math.min(320, e.deltaY)) * 0.0016)
     onChange(zoomView(view, within, factor))
   }
 
@@ -132,23 +173,34 @@ export default function Navigator({ view, events, onChange }: Props) {
     }
   }
 
+  const brushLo = brush ? Math.min(brush.x0, brush.x1) : 0
+  const brushHi = brush ? Math.max(brush.x0, brush.x1) : 0
+  const brushActive = brush != null && brushHi - brushLo > 4
+
   return (
     <div className="navigator" aria-label="Time scale">
       <div
-        className={`nav-track ${dragging ? 'dragging' : ''}`}
+        className={`nav-track ${brushActive ? 'brushing' : ''}`}
         ref={trackRef}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
+        onPointerUp={endBrush}
+        onPointerCancel={endBrush}
         onWheel={onWheel}
         onKeyDown={onKeyDown}
         role="slider"
         tabIndex={0}
-        aria-label="Visible time range. Drag to pan, scroll to zoom, arrow keys to pan, plus and minus to zoom."
+        aria-label="Time scale. Drag across it to zoom to a range, scroll to zoom, arrow keys to pan, plus and minus to zoom."
         aria-valuetext={`${formatYear(view.startYear)} to ${formatYear(view.endYear)}`}
       >
         <canvas className="nav-hist" ref={histRef} aria-hidden />
+        {brushActive && (
+          <div className="nav-selection" style={{ left: brushLo, width: brushHi - brushLo }}>
+            <span className="brush-label left">{formatYear(xToYear(brushLo, view, width))}</span>
+            <span className="brush-label right">{formatYear(xToYear(brushHi, view, width))}</span>
+          </div>
+        )}
+        {!brushActive && <span className="nav-hint-text">drag across a range to zoom to it</span>}
       </div>
 
       <div className="nav-ticks" aria-hidden>
@@ -169,16 +221,16 @@ export default function Navigator({ view, events, onChange }: Props) {
           <span className="range">{formatYear(view.endYear)}</span>
         </span>
         <span className="zoom-btns">
+          <button className="nav-mini-btn" onClick={onBack} disabled={!canBack} title="Back to the previous view">
+            ↩ Back
+          </button>
           <button className="nav-mini-btn" onClick={() => onChange(zoomView(view, 0.5, 1 / 1.6))}>
             Zoom in
           </button>
           <button className="nav-mini-btn" onClick={() => onChange(zoomView(view, 0.5, 1.6))}>
             Zoom out
           </button>
-          <button
-            className="nav-mini-btn"
-            onClick={() => onChange({ startYear: MIN_YEAR, endYear: MAX_YEAR })}
-          >
+          <button className="nav-mini-btn" onClick={onResetAll}>
             All of time
           </button>
         </span>

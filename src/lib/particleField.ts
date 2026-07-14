@@ -56,8 +56,10 @@ function hexToRgb(hex: string): [number, number, number] {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
 }
 
+// Containers are sized by how many events they hold; the largest read at
+// about 6px across so they stand out of the wave without dominating it.
 function aggregateRadius(node: HNode): number {
-  return Math.min(7, 2.2 + Math.log2(node.descendantCount + 1) * 0.75)
+  return Math.min(3, 1.4 + Math.log2(node.descendantCount + 1) * 0.3)
 }
 
 /**

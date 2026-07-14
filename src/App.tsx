@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CategoryId, Era, HistEvent, TimeView } from './lib/types'
 import { loadEvents, EVENTS } from './data/events'
-import { CATEGORIES } from './data/categories'
-import { MIN_YEAR, MAX_YEAR, viewAround, viewFromSpan, viewMidYear } from './lib/timeMapping'
+import { CATEGORIES, categoryColor } from './data/categories'
+import { MIN_YEAR, MAX_YEAR, clampView, viewAround, viewFromSpan, viewMidYear } from './lib/timeMapping'
 import { buildForest, decimalYear, type HNode } from './lib/hierarchy'
 import { buildCausalIndex } from './lib/related'
 import { canFetchMoments, fetchSectionMoments } from './lib/wikiMoments'
@@ -44,19 +44,64 @@ export default function App() {
   const [toast, setToast] = useState<{ title: string; desc: string; color: string } | null>(null)
   const [hintDone, setHintDone] = useState(false)
 
+  // Focus mode: exploring one event's own timeline (its battles, phases, …).
+  // A stack so you can step into a war, then a campaign, and back out again.
+  const [focusStack, setFocusStack] = useState<{ id: string; returnView: TimeView }[]>([])
+  const focusId = focusStack.length > 0 ? focusStack[focusStack.length - 1].id : null
+
+  // View history for the ↩ Back button — recorded on jumps (eras, searches,
+  // range selections), not on every wheel tick.
+  const viewHistory = useRef<TimeView[]>([])
+  const [canBack, setCanBack] = useState(false)
+
   const reducedMotion = usePrefersReducedMotion()
   const isMobile = useMediaQuery('(max-width: 860px)')
 
   // Real events, auto-clustered into millennium → century → decade → event →
   // moment containers so everything steps down cleanly.
-  const forest = useMemo(() => buildForest(events, { cluster: true }), [events])
+  const fullForest = useMemo(() => buildForest(events, { cluster: true }), [events])
+  const byId = useMemo(() => new Map(events.map((e) => [e.id, e])), [events])
+  const causalIndex = useMemo(() => buildCausalIndex(events, byId), [events, byId])
+  const causalOf = useCallback((id: string) => causalIndex.get(id), [causalIndex])
+
+  // In focus mode only the focused event's subtree (plus its direct causes and
+  // effects — the "relevant events") is on the canvas.
+  const visibleEvents = useMemo(() => {
+    if (!focusId) return events
+    const root = fullForest.map.get(focusId)
+    if (!root || root.children.length === 0) return events
+    const out: HistEvent[] = []
+    const stack = [...root.children]
+    while (stack.length > 0) {
+      const n = stack.pop()!
+      out.push(n.ev)
+      for (const c of n.children) stack.push(c)
+    }
+    const links = causalIndex.get(focusId)
+    if (links) {
+      const inSet = new Set(out.map((e) => e.id))
+      for (const id of [...links.causes, ...links.effects]) {
+        if (!inSet.has(id) && id !== focusId) {
+          const ev = byId.get(id)
+          if (ev) out.push(ev)
+        }
+      }
+    }
+    return out
+  }, [events, focusId, fullForest, causalIndex, byId])
+  const visibleIds = useMemo(() => new Set(visibleEvents.map((e) => e.id)), [visibleEvents])
+
+  // The forest the canvas renders: full clustered forest normally; in focus
+  // mode a flat forest of the subtree (no time buckets — the event itself is
+  // the timeline).
+  const forest = useMemo(
+    () => (focusId ? buildForest(visibleEvents, { cluster: false }) : fullForest),
+    [focusId, visibleEvents, fullForest],
+  )
   const containers = useMemo(
     () => [...forest.map.values()].filter((n) => n.children.length > 0),
     [forest],
   )
-  const byId = useMemo(() => new Map(events.map((e) => [e.id, e])), [events])
-  const causalIndex = useMemo(() => buildCausalIndex(events, byId), [events, byId])
-  const causalOf = useCallback((id: string) => causalIndex.get(id), [causalIndex])
 
   useEffect(() => {
     let cancelled = false
@@ -106,19 +151,19 @@ export default function App() {
   const counts = useMemo(() => {
     const m = new Map<CategoryId, number>()
     for (const cat of CATEGORIES) m.set(cat.id, 0)
-    for (const ev of events) {
+    for (const ev of visibleEvents) {
       if (ev.year < view.startYear || ev.year > view.endYear) continue
       for (const c of ev.categories) m.set(c, (m.get(c) ?? 0) + 1)
     }
     return m
-  }, [events, view])
+  }, [visibleEvents, view])
 
   const visibleSorted = useMemo(
     () =>
-      events
+      visibleEvents
         .filter((e) => e.tier !== 'moment' && e.year >= view.startYear && e.year <= view.endYear && eventMatches(e))
         .sort((a, b) => a.year - b.year),
-    [events, view, eventMatches],
+    [visibleEvents, view, eventMatches],
   )
 
   const focusNode: HNode | null = useMemo(() => {
@@ -133,12 +178,82 @@ export default function App() {
   }, [containers, view])
 
   const selectedEvent = selectedId ? byId.get(selectedId) ?? null : null
+  const focusEvent = focusId ? byId.get(focusId) ?? null : null
 
   const setView = useCallback((v: TimeView) => {
     setViewState(v)
     setActiveEraId(null)
     setHintDone(true)
   }, [])
+
+  const pushHistory = useCallback((v: TimeView) => {
+    viewHistory.current.push(v)
+    if (viewHistory.current.length > 60) viewHistory.current.shift()
+    setCanBack(true)
+  }, [])
+
+  /** A deliberate jump (era, search, range selection) — recorded for ↩ Back. */
+  const jumpView = useCallback(
+    (v: TimeView) => {
+      pushHistory(view)
+      setView(clampView(v))
+    },
+    [view, pushHistory, setView],
+  )
+
+  const goBack = useCallback(() => {
+    const prev = viewHistory.current.pop()
+    setCanBack(viewHistory.current.length > 0)
+    if (prev) setView(prev)
+  }, [setView])
+
+  const exitFocus = useCallback(() => {
+    setFocusStack((s) => {
+      const top = s[s.length - 1]
+      if (top) setViewState(top.returnView)
+      return s.slice(0, -1)
+    })
+    setActiveEraId(null)
+    setHintDone(true)
+  }, [])
+
+// Escape steps out: first the open card, then one level of focus.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (selectedId) return // TimeCanvas/card handle closing the selection
+      if (focusStack.length > 0) exitFocus()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selectedId, focusStack.length, exitFocus])
+
+  /** Full reset: leave focus mode entirely and show all of time. */
+  const resetAll = useCallback(() => {
+    setFocusStack([])
+    setSelectedId(null)
+    setView(FULL_VIEW)
+  }, [setView])
+
+  /**
+   * Enter focus mode on a container event: the canvas becomes that event's own
+   * timeline. `span` overrides the zoom target when the children were added in
+   * this same update (moments) and the forest hasn't rebuilt yet.
+   */
+  const enterFocus = useCallback(
+    (id: string, span?: [number, number]) => {
+      const node = fullForest.map.get(id)
+      if (!node) return
+      const s = span ?? [node.spanStart, node.spanEnd]
+      setFocusStack((prev) => [...prev, { id, returnView: view }])
+      setViewState(viewFromSpan(s[0], s[1]))
+      setActiveEraId(null)
+      setSelectedId(null)
+      setHintDone(true)
+      if (soundOn) sound.select()
+    },
+    [fullForest, view, soundOn],
+  )
 
   const updateUrl = useCallback((id: string | null) => {
     const url = new URL(location.href)
@@ -157,6 +272,10 @@ export default function App() {
         if (focus) {
           const ev = byId.get(id)
           if (ev) {
+            // Jumping to something outside the focused subtree (search, lucky)
+            // leaves focus mode so the target is actually on the canvas.
+            if (focusStack.length > 0 && !visibleIds.has(id)) setFocusStack([])
+            pushHistory(view)
             setViewState(viewAround(ev.year))
             setActiveEraId(null)
           }
@@ -164,18 +283,22 @@ export default function App() {
         if (isMobile) setSidebarOpen(false)
       }
     },
-    [byId, soundOn, isMobile, updateUrl],
+    [byId, soundOn, isMobile, updateUrl, focusStack.length, visibleIds, pushHistory, view],
   )
 
   const drill = useCallback(
     (id: string) => {
-      const node = forest.map.get(id)
+      const node = forest.map.get(id) ?? fullForest.map.get(id)
       if (!node) return
       if (node.children.length > 0) {
-        setViewState(viewFromSpan(node.spanStart, node.spanEnd))
-        setActiveEraId(null)
-        setHintDone(true)
-        if (soundOn) sound.select()
+        // Synthetic time buckets just zoom; a real event opens as its own
+        // timeline — only its battles, phases and related events on canvas.
+        if (node.ev.id.startsWith('t:')) {
+          jumpView(viewFromSpan(node.spanStart, node.spanEnd))
+          if (soundOn) sound.select()
+        } else {
+          enterFocus(id)
+        }
         return
       }
       const ev = node.ev
@@ -189,16 +312,11 @@ export default function App() {
               prev.some((e) => e.id === moments[0].id) ? prev : [...prev, ...moments],
             )
             const years = moments.map((m) => decimalYear(m))
-            setViewState(
-              viewFromSpan(
-                Math.min(node.spanStart, ...years),
-                Math.max(node.spanEnd, ...years),
-              ),
-            )
-            setActiveEraId(null)
-            setHintDone(true)
+            enterFocus(id, [
+              Math.min(node.spanStart, ...years),
+              Math.max(node.spanEnd, ...years),
+            ])
             setToast({ title: ev.title, desc: `${moments.length} moments from its Wikipedia article.`, color: '#8b9dff' })
-            if (soundOn) sound.select()
           } else {
             setToast(null)
             select(id)
@@ -208,18 +326,20 @@ export default function App() {
       }
       select(id)
     },
-    [forest, soundOn, select],
+    [forest, fullForest, soundOn, select, jumpView, enterFocus],
   )
 
   const selectEra = useCallback(
     (era: Era) => {
+      setFocusStack([])
+      pushHistory(view)
       setViewState({ startYear: era.startYear, endYear: era.endYear })
       setActiveEraId(era.id)
       setToast({ title: era.name, desc: era.description, color: era.color })
       setHintDone(true)
       if (soundOn) sound.era()
     },
-    [soundOn],
+    [soundOn, pushHistory, view],
   )
 
   const toggleCat = useCallback((id: CategoryId) => {
@@ -237,6 +357,8 @@ export default function App() {
     (mode: LuckyMode) => {
       const ev = discover(events.filter((e) => e.tier !== 'moment'), mode, new Date())
       if (!ev) return
+      setFocusStack([])
+      pushHistory(view)
       setViewState(viewAround(ev.year))
       setActiveEraId(null)
       setSelectedId(ev.id)
@@ -245,7 +367,7 @@ export default function App() {
       setToast({ title: 'Discover', desc: ev.title, color: '#8b9dff' })
       if (soundOn) sound.select()
     },
-    [events, soundOn, updateUrl],
+    [events, soundOn, updateUrl, pushHistory, view],
   )
 
   return (
@@ -322,7 +444,7 @@ export default function App() {
           )}
           {mode === 'map' && (
             <MapView
-              events={events}
+              events={visibleEvents}
               view={view}
               eventMatches={eventMatches}
               selectedId={selectedId}
@@ -331,7 +453,7 @@ export default function App() {
           )}
           {mode === 'compare' && (
             <ComparisonView
-              events={events}
+              events={visibleEvents}
               view={view}
               selectedId={selectedId}
               onSelect={(id) => select(id, false)}
@@ -339,10 +461,11 @@ export default function App() {
           )}
           {mode === 'timeline' && (
             <TimeCanvas
-              events={events}
+              events={visibleEvents}
               forest={forest}
               view={view}
               onViewChange={setView}
+              onRangeSelect={jumpView}
               nodePredicate={nodePredicate}
               eventMatches={eventMatches}
               causalOf={causalOf}
@@ -356,11 +479,28 @@ export default function App() {
 
           {mode === 'timeline' && <EraRail activeEraId={activeEraId} onSelect={selectEra} />}
 
+          {mode === 'timeline' && focusEvent && (
+            <div className="focus-banner" role="status">
+              <span
+                className="fb-dot"
+                style={{ background: categoryColor(focusEvent.categories[0]) }}
+                aria-hidden
+              />
+              <span className="fb-label">
+                Inside <strong>{focusEvent.title}</strong>
+                <span className="fb-count"> · {visibleEvents.length} events</span>
+              </span>
+              <button className="fb-exit" onClick={exitFocus}>
+                ✕ Back{focusStack.length > 1 ? ' out one level' : ' to the timeline'}
+              </button>
+            </div>
+          )}
+
           {mode === 'timeline' && (
             <Breadcrumb
               focus={focusNode}
-              onHome={() => setView(FULL_VIEW)}
-              onCrumb={(node) => setView(viewFromSpan(node.spanStart, node.spanEnd))}
+              onHome={resetAll}
+              onCrumb={(node) => jumpView(viewFromSpan(node.spanStart, node.spanEnd))}
             />
           )}
 
@@ -386,7 +526,15 @@ export default function App() {
         </div>
       </div>
 
-      <Navigator view={view} events={events} onChange={setView} />
+      <Navigator
+        view={view}
+        events={visibleEvents}
+        onChange={setView}
+        onSelectRange={jumpView}
+        onBack={goBack}
+        canBack={canBack}
+        onResetAll={resetAll}
+      />
     </div>
   )
 }

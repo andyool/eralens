@@ -834,15 +834,24 @@ button {
 }
 .nav-track {
   position: relative;
-  height: 46px;
+  height: 54px;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--panel-border);
   overflow: hidden;
-  cursor: grab;
+  cursor: crosshair;
+  touch-action: none;
 }
-.nav-track.dragging {
-  cursor: grabbing;
+.nav-track.brushing {
+  cursor: ew-resize;
+}
+.nav-hint-text {
+  position: absolute;
+  right: 10px;
+  top: 4px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  pointer-events: none;
 }
 .nav-hist {
   position: absolute;
@@ -928,6 +937,94 @@ button {
 .nav-mini-btn:hover {
   color: var(--text);
   background: rgba(255, 255, 255, 0.09);
+}
+.nav-mini-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.brush-label {
+  position: absolute;
+  top: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(8, 10, 17, 0.85);
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.brush-label.left {
+  left: 4px;
+}
+.brush-label.right {
+  right: 4px;
+}
+
+/* Shift-drag range selection on the main canvas */
+.range-brush {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(91, 200, 255, 0.1);
+  border-left: 2px solid var(--accent);
+  border-right: 2px solid var(--accent);
+  pointer-events: none;
+  z-index: 12;
+}
+.range-brush .brush-label {
+  top: 12px;
+}
+
+/* Focus mode banner — exploring one event's own timeline */
+.focus-banner {
+  position: absolute;
+  top: 58px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px 7px 14px;
+  border-radius: 999px;
+  background: rgba(10, 13, 22, 0.92);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  z-index: 30;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  max-width: min(92%, 640px);
+  white-space: nowrap;
+}
+.focus-banner .fb-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+.focus-banner .fb-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.focus-banner .fb-label strong {
+  color: var(--text);
+}
+.focus-banner .fb-count {
+  color: var(--text-faint);
+}
+.focus-banner .fb-exit {
+  flex: none;
+  border: 1px solid var(--panel-border);
+  background: rgba(91, 200, 255, 0.12);
+  color: var(--text);
+  border-radius: 999px;
+  height: 26px;
+  padding: 0 11px;
+  font-size: 12px;
+}
+.focus-banner .fb-exit:hover {
+  background: rgba(91, 200, 255, 0.22);
 }
 
 /* ── Event card ────────────────────────────────────────────────────────── */

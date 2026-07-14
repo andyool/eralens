@@ -3,8 +3,8 @@ import type { HistEvent, TimeView } from '../lib/types'
 import { ParticleField } from '../lib/particleField'
 import type { Forest, HNode } from '../lib/hierarchy'
 import type { CausalLinks } from '../lib/related'
-import { panView, zoomView } from '../lib/timeMapping'
-import { compactDate } from '../lib/dateFormat'
+import { clampView, panView, xToYear, zoomView } from '../lib/timeMapping'
+import { compactDate, formatYear } from '../lib/dateFormat'
 import { categoryColor } from '../data/categories'
 import { fetchWikiSummary } from '../lib/wiki'
 
@@ -13,6 +13,8 @@ interface Props {
   forest: Forest
   view: TimeView
   onViewChange: (v: TimeView) => void
+  /** A deliberate range selection (shift-drag) — recorded in history for ↩ Back. */
+  onRangeSelect: (v: TimeView) => void
   nodePredicate: (node: HNode) => boolean
   eventMatches: (ev: HistEvent) => boolean
   causalOf: (id: string) => CausalLinks | undefined
@@ -30,6 +32,7 @@ export default function TimeCanvas({
   forest,
   view,
   onViewChange,
+  onRangeSelect,
   nodePredicate,
   eventMatches,
   causalOf,
@@ -151,6 +154,40 @@ export default function TimeCanvas({
   } | null>(null)
   const lastSwitch = useRef(0)
 
+  // Latest view for animation callbacks that outlive a render.
+  const viewRef = useRef(view)
+  viewRef.current = view
+
+  // Inertia: the field keeps gliding after a flick, like a real strip of film.
+  const velocity = useRef({ v: 0, lastX: 0, lastT: 0 })
+  const inertiaRaf = useRef<number | null>(null)
+  const stopInertia = useCallback(() => {
+    if (inertiaRaf.current != null) cancelAnimationFrame(inertiaRaf.current)
+    inertiaRaf.current = null
+  }, [])
+  const startInertia = useCallback(() => {
+    if (reducedMotion) return
+    let v = velocity.current.v // px/ms, positive = dragging right
+    if (Math.abs(v) < 0.08) return
+    v = Math.max(-3.5, Math.min(3.5, v))
+    let last = performance.now()
+    const step = (now: number) => {
+      const dt = Math.min(48, now - last)
+      last = now
+      const width = canvasRef.current?.getBoundingClientRect().width ?? 1
+      onViewChange(panView(viewRef.current, (v * dt) / Math.max(1, width)))
+      v *= Math.exp(-dt / 260)
+      if (Math.abs(v) > 0.02) inertiaRaf.current = requestAnimationFrame(step)
+      else inertiaRaf.current = null
+    }
+    inertiaRaf.current = requestAnimationFrame(step)
+  }, [onViewChange, reducedMotion])
+  useEffect(() => stopInertia, [stopInertia])
+
+  // Shift-drag range selection, drawn as a translucent band with live dates.
+  const [brush, setBrush] = useState<{ x0: number; x1: number } | null>(null)
+  const brushing = useRef(false)
+
   const localXY = (e: React.PointerEvent) => {
     const rect = canvasRef.current!.getBoundingClientRect()
     return { x: e.clientX - rect.left, y: e.clientY - rect.top, width: rect.width }
@@ -175,6 +212,17 @@ export default function TimeCanvas({
     const { x, y } = localXY(e)
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
+    stopInertia()
+
+    if (e.shiftKey && pointers.current.size === 1) {
+      brushing.current = true
+      setBrush({ x0: x, x1: x })
+      setHoverId(null)
+      setChip(null)
+      return
+    }
+
+    velocity.current = { v: 0, lastX: x, lastT: performance.now() }
 
     if (pointers.current.size === 2) {
       const pts = [...pointers.current.values()]
@@ -212,6 +260,11 @@ export default function TimeCanvas({
       pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
     }
 
+    if (brushing.current) {
+      setBrush((b) => (b ? { ...b, x1: x } : b))
+      return
+    }
+
     if (pointers.current.size === 2 && drag.current) {
       const pts = [...pointers.current.values()]
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
@@ -229,6 +282,15 @@ export default function TimeCanvas({
       if (drag.current.moved) {
         setHoverId(null)
         setChip(null)
+        // Smoothed velocity sample for the release inertia.
+        const now = performance.now()
+        const dt = now - velocity.current.lastT
+        if (dt > 0) {
+          const inst = (x - velocity.current.lastX) / dt
+          velocity.current.v = velocity.current.v * 0.75 + inst * 0.25
+          velocity.current.lastX = x
+          velocity.current.lastT = now
+        }
         onViewChange(panView(drag.current.startView, dx / Math.max(1, width)))
         return
       }
@@ -242,7 +304,29 @@ export default function TimeCanvas({
   const endPointer = (e: React.PointerEvent) => {
     const wasDrag = drag.current
     pointers.current.delete(e.pointerId)
+
+    if (brushing.current) {
+      brushing.current = false
+      const { x } = localXY(e)
+      const width = canvasRef.current?.getBoundingClientRect().width ?? 1
+      setBrush((b) => {
+        if (b && Math.abs(x - b.x0) > 10) {
+          const lo = Math.min(b.x0, x)
+          const hi = Math.max(b.x0, x)
+          onRangeSelect(
+            clampView({ startYear: xToYear(lo, view, width), endYear: xToYear(hi, view, width) }),
+          )
+        }
+        return null
+      })
+      drag.current = null
+      return
+    }
+
     if (pointers.current.size === 0) {
+      if (wasDrag && wasDrag.active && wasDrag.moved) {
+        startInertia()
+      }
       if (wasDrag && wasDrag.active && !wasDrag.moved) {
         const { x, y } = localXY(e)
         const radius = e.pointerType === 'touch' ? 34 : 24
@@ -265,9 +349,11 @@ export default function TimeCanvas({
   }
 
   const onWheel = (e: React.WheelEvent) => {
+    stopInertia()
     const rect = canvasRef.current!.getBoundingClientRect()
     const within = rect.width ? (e.clientX - rect.left) / rect.width : 0.5
-    const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15
+    // Delta-proportional factor: gentle on trackpads, solid on wheel notches.
+    const factor = Math.exp(Math.max(-320, Math.min(320, e.deltaY)) * 0.0016)
     onViewChange(zoomView(view, within, factor))
   }
 
@@ -345,9 +431,25 @@ export default function TimeCanvas({
         </div>
       )}
 
+      {brush && Math.abs(brush.x1 - brush.x0) > 4 && (
+        <div
+          className="range-brush"
+          style={{ left: Math.min(brush.x0, brush.x1), width: Math.abs(brush.x1 - brush.x0) }}
+          aria-hidden
+        >
+          <span className="brush-label left">
+            {formatYear(xToYear(Math.min(brush.x0, brush.x1), view, wrapRef.current?.clientWidth ?? 1))}
+          </span>
+          <span className="brush-label right">
+            {formatYear(xToYear(Math.max(brush.x0, brush.x1), view, wrapRef.current?.clientWidth ?? 1))}
+          </span>
+        </div>
+      )}
+
       {showHint && (
         <div className="canvas-hint">
-          Move across the field to discover events · click a ringed dot to zoom in · drag to pan
+          Drag to pan · scroll to zoom · shift-drag to select a range · click a ringed dot to open
+          its timeline
         </div>
       )}
 

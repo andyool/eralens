@@ -37,9 +37,10 @@ export function selectionScore(ev: HistEvent, proximity: number): number {
   )
 }
 
-/** Base dot radius in CSS px, scaled gently by significance. Small on purpose —
- * with the full Wikipedia dataset the field reads as a waveform of tiny dots,
- * with only the most significant events standing slightly proud of it. */
+/** Base dot radius in CSS px for leaf events. Small on purpose — with the full
+ * Wikipedia dataset the field reads as a waveform of tiny dots. Size signals
+ * how much an event *contains*: leaves stay small, containers grow with their
+ * descendant count (see aggregateRadius) up to ~6px across. */
 export function baseRadius(ev: HistEvent): number {
-  return 0.9 + significance01(ev) * 2.0
+  return 0.8 + significance01(ev) * 1.1
 }
