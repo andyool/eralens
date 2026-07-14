@@ -1525,13 +1525,14 @@ button {
   display: flex;
   gap: 20px;
   align-items: flex-start;
-  padding: 16px 24px 12px;
+  padding: 14px 24px 10px;
   border-bottom: 1px solid var(--panel-border);
   background: rgba(10, 13, 22, 0.6);
+  flex: none;
 }
 .story-hero {
-  width: 136px;
-  height: 136px;
+  width: 118px;
+  height: 118px;
   object-fit: cover;
   border-radius: 12px;
   border: 1px solid var(--panel-border-strong);
@@ -1549,14 +1550,14 @@ button {
   height: 26px;
   padding: 0 12px;
   font-size: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .story-back:hover {
   color: var(--text);
   background: rgba(255, 255, 255, 0.1);
 }
 .story-head h1 {
-  font-size: 26px;
+  font-size: 24px;
   line-height: 1.15;
   margin: 0 0 4px;
   letter-spacing: -0.3px;
@@ -1565,18 +1566,18 @@ button {
   color: var(--story-accent, var(--accent));
   font-weight: 650;
   font-size: 13px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 .story-extract {
   color: var(--text-dim);
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.45;
-  max-width: 760px;
+  max-width: 780px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  margin: 0 0 8px;
+  margin: 0 0 6px;
 }
 .story-wplink {
   font-size: 12.5px;
@@ -1591,13 +1592,20 @@ button {
 }
 .story-strip-wrap {
   flex: 1;
+  min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 6px 10px;
+  padding: 4px 0;
 }
 .story-strip {
   position: relative;
   height: 100%;
+}
+.story-links {
+  position: absolute;
+  inset: 0;
+  color: var(--story-accent, var(--accent));
+  pointer-events: none;
 }
 .story-axis {
   position: absolute;
@@ -1605,35 +1613,17 @@ button {
   right: 12px;
   top: 50%;
   height: 2px;
-  background: linear-gradient(90deg, transparent, var(--story-accent, var(--accent)) 6%, var(--story-accent, var(--accent)) 94%, transparent);
+  background: linear-gradient(90deg, transparent, var(--story-accent, var(--accent)) 4%, var(--story-accent, var(--accent)) 96%, transparent);
   opacity: 0.65;
 }
-.story-axis-label {
-  position: absolute;
-  top: calc(50% + 8px);
-  font-size: 11.5px;
-  font-weight: 650;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-.story-axis-label.start {
-  left: 14px;
-}
-.story-axis-label.end {
-  right: 14px;
-}
 .story-node {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 0;
+  display: contents;
 }
 .story-dot {
   position: absolute;
   top: 50%;
-  left: 0;
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   transform: translate(-50%, -50%);
   background: var(--story-accent, var(--accent));
@@ -1641,68 +1631,87 @@ button {
   box-shadow: 0 0 0 1.5px var(--story-accent, var(--accent)), 0 0 14px rgba(91, 200, 255, 0.35);
   z-index: 2;
 }
-.story-connector {
+.story-dot-date {
   position: absolute;
-  left: 0;
-  width: 1.5px;
-  background: linear-gradient(180deg, var(--story-accent, var(--accent)), transparent);
-  opacity: 0.7;
+  transform: translateX(-50%);
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  z-index: 2;
 }
-.story-node.above .story-connector {
-  bottom: 50%;
-  height: 26px;
-  background: linear-gradient(0deg, var(--story-accent, var(--accent)), rgba(255, 255, 255, 0.12));
+.story-dot-date.below-axis {
+  top: calc(50% + 10px);
 }
-.story-node.below .story-connector {
-  top: 50%;
-  height: 26px;
+.story-dot-date.above-axis {
+  bottom: calc(50% + 10px);
 }
+/* Full text, never truncated: fixed card frame, prose scrolls inside. */
 .story-card {
   position: absolute;
-  left: 0;
-  transform: translateX(-50%);
-  width: 248px;
-  background: rgba(16, 20, 32, 0.96);
+  height: calc(50% - 40px);
+  background: rgba(16, 20, 32, 0.97);
   border: 1px solid var(--panel-border-strong);
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
 }
-.story-node.above .story-card {
-  bottom: calc(50% + 28px);
+.story-card.above {
+  top: 6px;
 }
-.story-node.below .story-card {
-  top: calc(50% + 28px);
+.story-card.below {
+  bottom: 6px;
 }
 .story-card img {
   display: block;
   width: 100%;
-  height: 88px;
+  height: 82px;
   object-fit: cover;
   border-bottom: 1px solid var(--panel-border);
+  flex: none;
+}
+.story-card .sc-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px 4px;
+  flex: none;
 }
 .story-card h3 {
-  font-size: 13.5px;
-  margin: 9px 12px 5px;
+  font-size: 13px;
+  margin: 0;
   line-height: 1.25;
 }
-.story-card p {
-  font-size: 11.8px;
-  line-height: 1.5;
+.story-card .sc-date {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--story-accent, var(--accent));
+  white-space: nowrap;
+}
+.story-card .sc-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 12px 14px;
+  overscroll-behavior: contain;
+  /* fade at the bottom edge signals "scroll for the rest" */
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 14px), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 14px), transparent);
+  scrollbar-width: thin;
+}
+.story-card .sc-body p {
+  font-size: 12px;
+  line-height: 1.55;
   color: var(--text-dim);
-  margin: 0 12px 8px;
-  display: -webkit-box;
-  -webkit-line-clamp: 5;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  margin: 0 0 8px;
+  overflow-wrap: break-word;
 }
-.story-card a {
-  display: block;
-  font-size: 11.5px;
-  color: var(--accent);
-  margin: 0 12px 10px;
-}
-.story-node .story-card:hover {
+.story-card:hover {
   border-color: var(--story-accent, var(--accent));
 }
 
