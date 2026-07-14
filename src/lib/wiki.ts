@@ -27,7 +27,9 @@ export function wikidataUrl(ev: HistEvent): string | null {
  * null and the UI falls back to the seeded description and a placeholder.
  */
 export async function fetchWikiSummary(ev: HistEvent): Promise<WikiSummary | null> {
-  const title = ev.wikiTitle
+  // Section moments carry a "#anchor" fragment — the summary endpoint wants
+  // the bare article title.
+  const title = ev.wikiTitle?.split('#')[0]
   if (!title) return null
   if (cache.has(title)) return cache.get(title) ?? null
   const existing = inflight.get(title)

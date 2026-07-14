@@ -3,7 +3,9 @@ import type { CategoryId, Era, HistEvent, TimeView } from './lib/types'
 import { loadEvents, EVENTS } from './data/events'
 import { CATEGORIES } from './data/categories'
 import { MIN_YEAR, MAX_YEAR, viewAround, viewFromSpan, viewMidYear } from './lib/timeMapping'
-import { buildForest, type HNode } from './lib/hierarchy'
+import { buildForest, decimalYear, type HNode } from './lib/hierarchy'
+import { buildCausalIndex } from './lib/related'
+import { canFetchMoments, fetchSectionMoments } from './lib/wikiMoments'
 import { discover, type LuckyMode } from './lib/discover'
 import { sound } from './lib/sound'
 import { usePrefersReducedMotion, useMediaQuery } from './hooks'
@@ -53,6 +55,8 @@ export default function App() {
     [forest],
   )
   const byId = useMemo(() => new Map(events.map((e) => [e.id, e])), [events])
+  const causalIndex = useMemo(() => buildCausalIndex(events, byId), [events, byId])
+  const causalOf = useCallback((id: string) => causalIndex.get(id), [causalIndex])
 
   useEffect(() => {
     let cancelled = false
@@ -172,9 +176,37 @@ export default function App() {
         setActiveEraId(null)
         setHintDone(true)
         if (soundOn) sound.select()
-      } else {
-        select(id)
+        return
       }
+      const ev = node.ev
+      if (canFetchMoments(ev)) {
+        // Dive: the most granular Wikipedia pages become the moments — fetch
+        // the article's sections and spread them across the event's span.
+        setToast({ title: 'Diving in', desc: `Fetching the moments of “${ev.title}”…`, color: '#8b9dff' })
+        fetchSectionMoments(ev).then((moments) => {
+          if (moments.length > 0) {
+            setEvents((prev) =>
+              prev.some((e) => e.id === moments[0].id) ? prev : [...prev, ...moments],
+            )
+            const years = moments.map((m) => decimalYear(m))
+            setViewState(
+              viewFromSpan(
+                Math.min(node.spanStart, ...years),
+                Math.max(node.spanEnd, ...years),
+              ),
+            )
+            setActiveEraId(null)
+            setHintDone(true)
+            setToast({ title: ev.title, desc: `${moments.length} moments from its Wikipedia article.`, color: '#8b9dff' })
+            if (soundOn) sound.select()
+          } else {
+            setToast(null)
+            select(id)
+          }
+        })
+        return
+      }
+      select(id)
     },
     [forest, soundOn, select],
   )
@@ -313,6 +345,7 @@ export default function App() {
               onViewChange={setView}
               nodePredicate={nodePredicate}
               eventMatches={eventMatches}
+              causalOf={causalOf}
               selectedId={selectedId}
               onSelect={(id) => select(id, false)}
               onDrill={drill}

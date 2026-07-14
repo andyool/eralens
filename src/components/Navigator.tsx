@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { HistEvent, TimeView } from '../lib/types'
 import {
   MIN_YEAR,
   MAX_YEAR,
-  clampView,
-  fractionOnFullAxis,
-  yearAtFullAxisFraction,
+  axisTicks,
+  fractionInView,
+  panView,
   zoomView,
 } from '../lib/timeMapping'
 import { formatYear } from '../lib/dateFormat'
@@ -17,37 +17,22 @@ interface Props {
   onChange: (view: TimeView) => void
 }
 
-// Log-spaced reference marks across the whole Big Bang → now axis.
-const AXIS_MARKS_BP = [0, 1000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000, 10_000_000_000]
-
-type DragMode = 'start' | 'end' | 'pan' | null
-
+/**
+ * The bottom scale. It always shows the *visible* range — zoom into the 20th
+ * century and it reads 1900 … 2000 — using the same warped time mapping as the
+ * main canvas, so the density silhouette lines up column-for-column with the
+ * dots above it. Drag to pan, wheel to zoom.
+ */
 export default function Navigator({ view, events, onChange }: Props) {
   const [trackRef, size] = useResizeObserver<HTMLDivElement>()
   const histRef = useRef<HTMLCanvasElement | null>(null)
-  const drag = useRef<{ mode: DragMode; grabFrac: number; startFrac: number; endFrac: number }>({
-    mode: null,
-    grabFrac: 0,
-    startFrac: 0,
-    endFrac: 1,
-  })
+  const [dragging, setDragging] = useState(false)
+  const drag = useRef<{ startX: number; startView: TimeView } | null>(null)
 
-  const fracStart = fractionOnFullAxis(view.startYear)
-  const fracEnd = fractionOnFullAxis(view.endYear)
+  const width = size.width || 800
+  const ticks = useMemo(() => axisTicks(view, width, 60), [view, width])
 
-  // Precompute the density silhouette over the full axis.
-  const density = useMemo(() => {
-    const bins = 240
-    const arr = new Array(bins).fill(0)
-    for (const ev of events) {
-      const f = fractionOnFullAxis(ev.year)
-      const b = Math.max(0, Math.min(bins - 1, Math.floor(f * bins)))
-      arr[b] += 1
-    }
-    return arr
-  }, [events])
-
-  // Draw the histogram whenever size or data changes.
+  // Density silhouette of the events inside the visible range.
   useEffect(() => {
     const canvas = histRef.current
     if (!canvas) return
@@ -62,7 +47,14 @@ export default function Navigator({ view, events, onChange }: Props) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, w, h)
 
-    const bins = density.length
+    const bins = Math.max(60, Math.min(420, Math.floor(w / 3)))
+    const density = new Array<number>(bins).fill(0)
+    for (const ev of events) {
+      if (ev.tier === 'moment') continue
+      const f = fractionInView(ev.year, view)
+      if (f < 0 || f > 1) continue
+      density[Math.min(bins - 1, Math.floor(f * bins))] += 1
+    }
     const max = Math.max(1, ...density)
     const grad = ctx.createLinearGradient(0, 0, 0, h)
     grad.addColorStop(0, 'rgba(91,200,255,0.55)')
@@ -73,131 +65,100 @@ export default function Navigator({ view, events, onChange }: Props) {
     for (let i = 0; i < bins; i++) {
       const x = (i / (bins - 1)) * w
       const v = Math.sqrt(density[i] / max) // sqrt keeps small counts visible
-      const y = h - v * (h - 4)
-      ctx.lineTo(x, y)
+      ctx.lineTo(x, h - v * (h - 4))
     }
     ctx.lineTo(w, h)
     ctx.closePath()
     ctx.fill()
-  }, [density, size.width, size.height])
 
-  const fracFromClientX = useCallback((clientX: number) => {
-    const el = trackRef.current
-    if (!el) return 0
-    const rect = el.getBoundingClientRect()
-    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-  }, [trackRef])
+    // Faint grid lines under the ticks so the scale reads against the wave.
+    ctx.strokeStyle = 'rgba(255,255,255,0.09)'
+    ctx.lineWidth = 1
+    for (const t of ticks) {
+      const x = Math.round(t.fraction * w) + 0.5
+      ctx.beginPath()
+      ctx.moveTo(x, t.major ? 2 : h * 0.45)
+      ctx.lineTo(x, h)
+      ctx.stroke()
+    }
+  }, [events, view, ticks, size.width, size.height])
 
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault()
+      ;(e.target as Element).setPointerCapture?.(e.pointerId)
+      drag.current = { startX: e.clientX, startView: view }
+      setDragging(true)
+      document.body.style.userSelect = 'none'
+    },
+    [view],
+  )
+
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent) => {
       const d = drag.current
-      if (!d.mode) return
-      const f = fracFromClientX(e.clientX)
-      if (d.mode === 'start') {
-        const nf = Math.min(f, d.endFrac - 0.006)
-        onChange(clampView({ startYear: yearAtFullAxisFraction(nf), endYear: view.endYear }))
-      } else if (d.mode === 'end') {
-        const nf = Math.max(f, d.startFrac + 0.006)
-        onChange(clampView({ startYear: view.startYear, endYear: yearAtFullAxisFraction(nf) }))
-      } else if (d.mode === 'pan') {
-        let delta = f - d.grabFrac
-        let ns = d.startFrac + delta
-        let ne = d.endFrac + delta
-        if (ns < 0) {
-          ne -= ns
-          ns = 0
-        }
-        if (ne > 1) {
-          ns -= ne - 1
-          ne = 1
-        }
-        onChange(
-          clampView({ startYear: yearAtFullAxisFraction(ns), endYear: yearAtFullAxisFraction(ne) }),
-        )
-      }
-    }
-    const onUp = () => {
-      drag.current.mode = null
-      document.body.style.userSelect = ''
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-    window.addEventListener('pointercancel', onUp)
-    return () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      window.removeEventListener('pointercancel', onUp)
-    }
-  }, [fracFromClientX, onChange, view.startYear, view.endYear])
+      if (!d) return
+      const dx = e.clientX - d.startX
+      onChange(panView(d.startView, dx / Math.max(1, width)))
+    },
+    [onChange, width],
+  )
 
-  const beginDrag = (mode: Exclude<DragMode, null>) => (e: React.PointerEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    drag.current = { mode, grabFrac: fracFromClientX(e.clientX), startFrac: fracStart, endFrac: fracEnd }
-    document.body.style.userSelect = 'none'
-  }
+  const endDrag = useCallback(() => {
+    drag.current = null
+    setDragging(false)
+    document.body.style.userSelect = ''
+  }, [])
 
   const onWheel = (e: React.WheelEvent) => {
-    const focal = fracFromClientX(e.clientX)
-    // focal fraction is on the full axis; convert to fraction within the view.
-    const within = (focal - fracStart) / Math.max(1e-6, fracEnd - fracStart)
+    const el = trackRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const within = rect.width ? (e.clientX - rect.left) / rect.width : 0.5
     const factor = e.deltaY > 0 ? 1.18 : 1 / 1.18
     onChange(zoomView(view, within, factor))
   }
 
-  const marks = AXIS_MARKS_BP.map((bp) => {
-    const year = MAX_YEAR - bp
-    return { year, frac: fractionOnFullAxis(year), label: markLabel(bp) }
-  }).filter((m) => m.frac >= 0 && m.frac <= 1)
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault()
+      onChange(panView(view, e.key === 'ArrowLeft' ? 0.12 : -0.12))
+    } else if (e.key === '+' || e.key === '=') {
+      e.preventDefault()
+      onChange(zoomView(view, 0.5, 1 / 1.4))
+    } else if (e.key === '-' || e.key === '_') {
+      e.preventDefault()
+      onChange(zoomView(view, 0.5, 1.4))
+    }
+  }
 
   return (
-    <div className="navigator" aria-label="Time range navigator">
+    <div className="navigator" aria-label="Time scale">
       <div
-        className={`nav-track ${drag.current.mode === 'pan' ? 'dragging' : ''}`}
+        className={`nav-track ${dragging ? 'dragging' : ''}`}
         ref={trackRef}
-        onPointerDown={beginDrag('pan')}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
         onWheel={onWheel}
-        role="group"
-        aria-label="Drag to pan; drag the handles to change the start and end of the visible period"
+        onKeyDown={onKeyDown}
+        role="slider"
+        tabIndex={0}
+        aria-label="Visible time range. Drag to pan, scroll to zoom, arrow keys to pan, plus and minus to zoom."
+        aria-valuetext={`${formatYear(view.startYear)} to ${formatYear(view.endYear)}`}
       >
         <canvas className="nav-hist" ref={histRef} aria-hidden />
-        <div className="nav-mask" style={{ left: 0, width: `${fracStart * 100}%` }} />
-        <div className="nav-mask" style={{ right: 0, width: `${(1 - fracEnd) * 100}%` }} />
-        <div
-          className="nav-selection"
-          style={{ left: `${fracStart * 100}%`, width: `${(fracEnd - fracStart) * 100}%` }}
-          onPointerDown={beginDrag('pan')}
-        />
-        <div
-          className="nav-handle"
-          style={{ left: `${fracStart * 100}%` }}
-          onPointerDown={beginDrag('start')}
-          role="slider"
-          tabIndex={0}
-          aria-label="Start of period"
-          aria-valuetext={formatYear(view.startYear)}
-          onKeyDown={(e) => handleKey(e, view, onChange, 'start')}
-        />
-        <div
-          className="nav-handle"
-          style={{ left: `${fracEnd * 100}%` }}
-          onPointerDown={beginDrag('end')}
-          role="slider"
-          tabIndex={0}
-          aria-label="End of period"
-          aria-valuetext={formatYear(view.endYear)}
-          onKeyDown={(e) => handleKey(e, view, onChange, 'end')}
-        />
       </div>
 
       <div className="nav-ticks" aria-hidden>
-        {marks.map((m) => (
+        {ticks.map((t) => (
           <span
-            key={m.year}
-            className="nav-tick major"
-            style={{ left: `${m.frac * 100}%` }}
+            key={t.year}
+            className={`nav-tick ${t.major ? 'major' : ''}`}
+            style={{ left: `${t.fraction * 100}%` }}
           >
-            {m.label}
+            {t.label}
           </span>
         ))}
       </div>
@@ -224,28 +185,4 @@ export default function Navigator({ view, events, onChange }: Props) {
       </div>
     </div>
   )
-}
-
-function markLabel(bp: number): string {
-  if (bp === 0) return 'now'
-  if (bp >= 1_000_000_000) return `${bp / 1_000_000_000} Gya`
-  if (bp >= 1_000_000) return `${bp / 1_000_000} Mya`
-  if (bp >= 1000) return `${bp / 1000} kya`
-  return `${bp}`
-}
-
-function handleKey(
-  e: React.KeyboardEvent,
-  view: TimeView,
-  onChange: (v: TimeView) => void,
-  which: 'start' | 'end',
-) {
-  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
-  e.preventDefault()
-  const dir = e.key === 'ArrowRight' ? 1 : -1
-  const f = which === 'start' ? fractionOnFullAxis(view.startYear) : fractionOnFullAxis(view.endYear)
-  const nf = Math.max(0, Math.min(1, f + dir * 0.01))
-  const year = yearAtFullAxisFraction(nf)
-  if (which === 'start') onChange(clampView({ startYear: year, endYear: view.endYear }))
-  else onChange(clampView({ startYear: view.startYear, endYear: year }))
 }

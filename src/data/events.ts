@@ -1,4 +1,4 @@
-import type { HistEvent } from '../lib/types'
+import type { CategoryId, EventRelation, HistEvent } from '../lib/types'
 import { SEED_EVENTS } from './events.seed'
 
 /** Seed dataset, sorted oldest → newest. */
@@ -29,6 +29,65 @@ function normTitle(t: string): string {
 }
 
 /**
+ * Compact row emitted by scripts/fetch-wikidata.mjs:
+ * [qid, title, year, month, day, endYear, significance, categoryMask, wiki,
+ *  lon, lat, parentQid, causes[], effects[], nexts[]]
+ * where 0 means "absent" and wiki is 1 (derivable from title), 0 (no article)
+ * or an explicit article title.
+ */
+type CompactRow = [
+  string, string, number, number, number, number, number, number,
+  0 | 1 | string, number, number, string | 0, string[] | 0, string[] | 0, string[] | 0,
+]
+
+interface CompactPayload {
+  format: 'eralens-compact-1'
+  categories: string[]
+  events: CompactRow[]
+}
+
+function isCompactPayload(x: unknown): x is CompactPayload {
+  if (!x || typeof x !== 'object') return false
+  const p = x as Record<string, unknown>
+  return p.format === 'eralens-compact-1' && Array.isArray(p.categories) && Array.isArray(p.events)
+}
+
+function expandCompact(payload: CompactPayload): HistEvent[] {
+  const catByBit = payload.categories as CategoryId[]
+  const out: HistEvent[] = []
+  for (const row of payload.events) {
+    const [qid, title, year, month, day, endYear, sig, mask, wiki, lon, lat, parent, causes, effects, nexts] = row
+    if (typeof qid !== 'string' || typeof title !== 'string' || typeof year !== 'number') continue
+    const categories: CategoryId[] = []
+    for (let i = 0; i < catByBit.length; i++) if (mask & (1 << i)) categories.push(catByBit[i])
+    const relations: EventRelation[] = []
+    if (causes) for (const q of causes) relations.push({ id: `wd_${q}`, kind: 'caused_by' })
+    if (effects) for (const q of effects) relations.push({ id: `wd_${q}`, kind: 'led_to' })
+    if (nexts) for (const q of nexts) relations.push({ id: `wd_${q}`, kind: 'same_movement' })
+    out.push({
+      id: `wd_${qid}`,
+      title,
+      year,
+      month: month || undefined,
+      day: day || undefined,
+      endYear: endYear || undefined,
+      precision: day ? 'day' : month ? 'month' : 'year',
+      type: 'event',
+      categories,
+      significance: sig,
+      description: '',
+      coordinates: lon || lat ? [lon, lat] : undefined,
+      wikiTitle: wiki === 1 ? title.replace(/ /g, '_') : typeof wiki === 'string' ? wiki : undefined,
+      wikidataId: qid,
+      parentId: parent ? `wd_${parent}` : undefined,
+      tier: parent ? 'event' : undefined,
+      relations: relations.length > 0 ? relations : undefined,
+    })
+  }
+  return out
+}
+
+/**
  * Merge generated (Wikidata) events into the curated seed. The seed wins on
  * duplicates — it carries descriptions, relations and hand-built moment trees
  * the generated data lacks (and it is the only source of deep-time events,
@@ -49,23 +108,35 @@ function mergeWithSeed(generated: HistEvent[]): HistEvent[] {
   }
   return [
     ...EVENTS,
-    ...kept.map((g) =>
-      g.parentId && remap.has(g.parentId) ? { ...g, parentId: remap.get(g.parentId) } : g,
-    ),
+    ...kept.map((g) => {
+      let e = g
+      if (e.parentId && remap.has(e.parentId)) e = { ...e, parentId: remap.get(e.parentId) }
+      if (e.relations?.some((r) => remap.has(r.id))) {
+        e = {
+          ...e,
+          relations: e.relations!.map((r) => (remap.has(r.id) ? { ...r, id: remap.get(r.id)! } : r)),
+        }
+      }
+      return e
+    }),
   ].sort((a, b) => a.year - b.year)
 }
 
 /**
  * Load the event dataset. Merges a generated `events.json` (produced by
  * `npm run fetch:wikidata`, served from the app root) into the seed so the
- * same UI can scale to thousands of records; otherwise falls back to the
- * in-repo seed alone so the app always works offline.
+ * same UI can scale to hundreds of thousands of records; otherwise falls back
+ * to the in-repo seed alone so the app always works offline.
  */
 export async function loadEvents(): Promise<HistEvent[]> {
   try {
     const res = await fetch(`${import.meta.env.BASE_URL}events.json`, { cache: 'no-cache' })
     if (res.ok) {
       const data = (await res.json()) as unknown
+      if (isCompactPayload(data)) {
+        return mergeWithSeed(expandCompact(data))
+      }
+      // Legacy format: a plain array of HistEvent objects.
       if (Array.isArray(data) && data.length > 0 && data.every(isValidEvent)) {
         return mergeWithSeed(data as HistEvent[])
       }

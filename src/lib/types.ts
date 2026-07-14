@@ -47,6 +47,7 @@ export type CategoryId =
   | 'disasters'
   | 'rights'
   | 'economics'
+  | 'sports'
 
 /** An explicit, labelled relationship between two events. */
 export interface EventRelation {

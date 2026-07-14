@@ -2,7 +2,7 @@ import type { HistEvent, TimeView } from './types'
 import { categoryColor } from '../data/categories'
 import { yearToX } from './timeMapping'
 import { baseRadius, selectionScore } from './significance'
-import { decimalYear, selectVisibleNodes, type Forest, type HNode } from './hierarchy'
+import { decimalYear, isTimeBucket, selectVisibleNodes, type Forest, type HNode } from './hierarchy'
 
 export interface PickResult {
   id: string
@@ -34,9 +34,11 @@ interface Particle {
 
 type FilterPredicate = (node: HNode) => boolean
 
-const BUCKET_PX = 7
-const BASE_SPACING = 8
-const EXPAND_PX = 58 // a container wider than this on screen opens into its children
+const BUCKET_PX = 4 // column width of the waveform stacking
+const BASE_SPACING = 5
+const MIN_SPACING = 2.2
+const EXPAND_PX = 44 // a container wider than this on screen opens into its children
+const SNAP_AT = 6000 // above this many visible dots, skip the fly-in animation
 const HALO_ALPHA = 0.9
 
 function hashId(id: string): number {
@@ -55,14 +57,18 @@ function hexToRgb(hex: string): [number, number, number] {
 }
 
 function aggregateRadius(node: HNode): number {
-  return Math.min(9.5, 2.6 + Math.log2(node.descendantCount + 1) * 1.0)
+  return Math.min(7, 2.2 + Math.log2(node.descendantCount + 1) * 0.75)
 }
 
 /**
  * The particle field. Imperative canvas renderer, kept outside React's render
- * loop. It owns hierarchy-aware level-of-detail layout (wars collapse to a dot,
- * then open into battles, then moments), the fly-into-formation animation and
- * cursor hit-testing.
+ * loop. Every event renders as a small dot at its true position on the time
+ * axis, stacked into per-column waves — the Histography waveform. Real
+ * containers (wars, revolutions) collapse to a single dot at their start date
+ * until they are wide enough on screen to open into their children; the
+ * synthetic time buckets always open, so the wave is made of actual events at
+ * every zoom level. Handles hover emphasis, causal highlighting and cursor
+ * hit-testing.
  */
 export class ParticleField {
   private canvas: HTMLCanvasElement
@@ -72,12 +78,14 @@ export class ParticleField {
 
   private forest: Forest = { map: new Map(), roots: [] }
   private particles = new Map<string, Particle>()
-  private ordered: Particle[] = []
+  private laid: Particle[] = []
   private view: TimeView = { startYear: -13_800_000_000, endYear: 2026 }
   private predicate: FilterPredicate = () => true
 
   private emphasisId: string | null = null
   private emphasisImage: HTMLImageElement | null = null
+  private relCauses: Set<string> = new Set()
+  private relEffects: Set<string> = new Set()
   private pulse = 0
 
   private reducedMotion = false
@@ -148,6 +156,13 @@ export class ParticleField {
     this.ensureRunning()
   }
 
+  /** Causal neighbourhood of the emphasised event; drawn highlighted, rest dimmed. */
+  setRelated(causes: Set<string>, effects: Set<string>) {
+    this.relCauses = causes
+    this.relEffects = effects
+    this.ensureRunning()
+  }
+
   resize() {
     const rect = this.canvas.getBoundingClientRect()
     const dpr = Math.min(2, window.devicePixelRatio || 1)
@@ -170,14 +185,16 @@ export class ParticleField {
 
     const xOf = (year: number) => pad + yearToX(year, view, innerW)
 
-    // 1. Pick the level-of-detail node set for this zoom.
+    // 1. Pick the level-of-detail node set for this zoom. Synthetic time
+    //    buckets always open — only real containers collapse to a dot.
     const visibleNodes = selectVisibleNodes(this.forest.roots, {
       intersects: (n) => n.spanEnd >= view.startYear && n.spanStart <= view.endYear,
-      expandable: (n) => xOf(n.spanEnd) - xOf(n.spanStart) >= EXPAND_PX,
+      expandable: (n) => isTimeBucket(n) || xOf(n.spanEnd) - xOf(n.spanStart) >= EXPAND_PX,
     })
 
-    // 2. Reset everyone, then place the visible (and filter-passing) nodes.
-    for (const p of this.particles.values()) {
+    // 2. Reset everyone, then place the visible (and filter-passing) nodes at
+    //    their actual date on the axis.
+    for (const p of this.laid) {
       p.visible = false
       p.tAlpha = 0
     }
@@ -188,20 +205,15 @@ export class ParticleField {
       const p = this.particles.get(node.ev.id)
       if (!p) continue
       p.visible = true
-      let x: number
-      if (p.aggregate) {
-        // Centre a collapsed container over its whole span.
-        x = (xOf(node.spanStart) + xOf(node.spanEnd)) / 2
-      } else {
-        const jitterX = (p.seed - 0.5) * 2.4
-        x = xOf(decimalYear(node.ev)) + jitterX
-      }
-      p.tx = x
+      p.tx = xOf(decimalYear(node.ev))
       p.tr = p.aggregate ? aggregateRadius(node) : baseRadius(node.ev) * (p.illustrative ? 0.82 : 1)
       laid.push(p)
     }
 
-    // 3. Vertical "waveform" stacking by x-bucket.
+    // 3. Vertical "waveform" stacking by x-column. Columns denser than the
+    //    available height keep only their most significant events — the wave
+    //    saturates instead of overflowing the canvas.
+    const colMax = Math.max(24, Math.min(240, Math.floor((maxHalf * 2) / MIN_SPACING)))
     const buckets = new Map<number, Particle[]>()
     for (const p of laid) {
       const b = Math.round(p.tx / BUCKET_PX)
@@ -209,40 +221,41 @@ export class ParticleField {
       list.push(p)
       buckets.set(b, list)
     }
+    this.laid = []
     for (const list of buckets.values()) {
       // Aggregates + significant events sit nearest the centre line.
       list.sort((a, b) => Number(b.aggregate) - Number(a.aggregate) || b.ev.significance - a.ev.significance)
-      const count = list.length
-      const spacing = Math.min(BASE_SPACING, maxHalf / (count / 2 + 0.6))
-      for (let i = 0; i < count; i++) {
+      const count = Math.min(list.length, colMax)
+      const spacing = Math.min(BASE_SPACING, Math.max(MIN_SPACING, maxHalf / (count / 2 + 0.6)))
+      for (let i = 0; i < list.length; i++) {
         const p = list[i]
+        if (i >= colMax) {
+          p.visible = false
+          p.tAlpha = 0
+          continue
+        }
         const step = Math.ceil(i / 2)
         const sign = i % 2 === 0 ? -1 : 1
         const jitterY = (hashId(p.ev.id + 'y') - 0.5) * spacing * 0.5
         p.ty = centerY + sign * step * spacing + jitterY
         p.tAlpha = 1
+        this.laid.push(p)
       }
     }
 
-    if (snap) {
-      for (const p of this.particles.values()) {
+    // With tens of thousands of dots the fly-in costs more than it delights —
+    // snap straight into formation and only animate at conversational scales.
+    const instant = snap || this.laid.length > SNAP_AT
+    for (const p of this.laid) {
+      if (instant || p.alpha < 0.02) {
         p.x = p.tx
-        p.y = p.ty
-        p.alpha = p.tAlpha
-        p.r = p.tr
-      }
-    } else {
-      for (const p of laid) {
-        if (p.alpha < 0.02) {
-          p.x = p.tx
-          p.y = this.height * 0.5
+        p.y = instant ? p.ty : this.height * 0.5
+        if (instant) {
+          p.alpha = p.tAlpha
+          p.r = p.tr
         }
       }
     }
-
-    this.ordered = Array.from(this.particles.values()).sort(
-      (a, b) => Number(a.aggregate) - Number(b.aggregate) || a.ev.significance - b.ev.significance,
-    )
   }
 
   private ensureRunning() {
@@ -269,18 +282,20 @@ export class ParticleField {
     this.lastTs = ts
 
     let active = false
-    for (const p of this.particles.values()) {
-      const k = this.reducedMotion ? 1 : 1 - Math.exp(-dt / p.tau)
-      const dx = p.tx - p.x
-      const dy = p.ty - p.y
-      const da = p.tAlpha - p.alpha
-      const dr = p.tr - p.r
-      p.x += dx * k
-      p.y += dy * k
-      p.alpha += da * k
-      p.r += dr * k
-      if (Math.abs(dx) > 0.3 || Math.abs(dy) > 0.3 || Math.abs(da) > 0.01 || Math.abs(dr) > 0.05) {
-        active = true
+    if (this.laid.length <= SNAP_AT) {
+      for (const p of this.laid) {
+        const k = this.reducedMotion ? 1 : 1 - Math.exp(-dt / p.tau)
+        const dx = p.tx - p.x
+        const dy = p.ty - p.y
+        const da = p.tAlpha - p.alpha
+        const dr = p.tr - p.r
+        p.x += dx * k
+        p.y += dy * k
+        p.alpha += da * k
+        p.r += dr * k
+        if (Math.abs(dx) > 0.3 || Math.abs(dy) > 0.3 || Math.abs(da) > 0.01 || Math.abs(dr) > 0.05) {
+          active = true
+        }
       }
     }
 
@@ -304,32 +319,107 @@ export class ParticleField {
     const { ctx, width, height } = this
     ctx.clearRect(0, 0, width, height)
 
-    for (const p of this.ordered) {
+    const focus = this.emphasisId
+    const hasRelations = this.relCauses.size + this.relEffects.size > 0
+    // Hovering an event fades the rest of the field back so its causal
+    // neighbourhood stands out; stronger when there are relations to show.
+    const dimMult = focus ? (hasRelations ? 0.18 : 0.35) : 1
+
+    // Batched dot rendering: group same colour + alpha into one Path2D so the
+    // canvas does a handful of fills instead of tens of thousands.
+    const groups = new Map<string, { path: Path2D; style: string }>()
+    const related: Particle[] = []
+    let aggregates: Particle[] | null = null
+
+    for (const p of this.laid) {
       if (p.alpha < 0.02) continue
-      if (p.ev.id === this.emphasisId) continue
-      const [r, g, b] = p.colorRgb
+      if (p.ev.id === focus) continue
+      const isRelated = focus != null && (this.relCauses.has(p.ev.id) || this.relEffects.has(p.ev.id))
+      if (isRelated) {
+        related.push(p)
+        continue
+      }
       if (p.aggregate) {
+        ;(aggregates ??= []).push(p)
+        continue
+      }
+      const base = (p.illustrative ? 0.4 : 0.74) * p.alpha * dimMult
+      const a = Math.round(base * 10) / 10
+      if (a <= 0) continue
+      const key = `${p.color}|${a}`
+      let g = groups.get(key)
+      if (!g) {
+        const [r, gr, b] = p.colorRgb
+        g = { path: new Path2D(), style: `rgba(${r},${gr},${b},${a})` }
+        groups.set(key, g)
+      }
+      if (p.r < 1.4) {
+        g.path.rect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2)
+      } else {
+        g.path.moveTo(p.x + p.r, p.y)
+        g.path.arc(p.x, p.y, p.r, 0, Math.PI * 2)
+      }
+    }
+
+    for (const g of groups.values()) {
+      ctx.fillStyle = g.style
+      ctx.fill(g.path)
+    }
+
+    if (aggregates) {
+      for (const p of aggregates) {
+        const [r, g, b] = p.colorRgb
+        const a = p.alpha * dimMult
         // Aggregate: filled dot + a thin outer ring signalling "opens up".
         ctx.beginPath()
-        ctx.fillStyle = `rgba(${r},${g},${b},${(0.82 * p.alpha).toFixed(3)})`
+        ctx.fillStyle = `rgba(${r},${g},${b},${(0.82 * a).toFixed(3)})`
         ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
         ctx.fill()
         ctx.beginPath()
         ctx.lineWidth = 1.2
-        ctx.strokeStyle = `rgba(${r},${g},${b},${(0.5 * p.alpha).toFixed(3)})`
+        ctx.strokeStyle = `rgba(${r},${g},${b},${(0.5 * a).toFixed(3)})`
         ctx.arc(p.x, p.y, p.r + 2.6, 0, Math.PI * 2)
         ctx.stroke()
-      } else {
-        const a = (p.illustrative ? 0.4 : 0.74) * p.alpha
-        ctx.beginPath()
-        ctx.fillStyle = `rgba(${r},${g},${b},${a.toFixed(3)})`
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
-        ctx.fill()
       }
     }
 
-    const em = this.emphasisId ? this.particles.get(this.emphasisId) : null
+    const em = focus ? this.particles.get(focus) : null
+    if (em && related.length > 0) this.drawCausalLinks(em, related)
+    for (const p of related) this.drawRelated(p)
     if (em && em.alpha > 0.02) this.drawEmphasis(em)
+  }
+
+  /** Curved connectors from the focused event to its causes and effects. */
+  private drawCausalLinks(em: Particle, related: Particle[]) {
+    const { ctx } = this
+    for (const p of related) {
+      const isCause = this.relCauses.has(p.ev.id)
+      ctx.beginPath()
+      ctx.moveTo(em.x, em.y)
+      const mx = (em.x + p.x) / 2
+      const my = (em.y + p.y) / 2 - Math.min(70, Math.abs(p.x - em.x) * 0.22 + 14)
+      ctx.quadraticCurveTo(mx, my, p.x, p.y)
+      ctx.lineWidth = 1.2
+      ctx.strokeStyle = isCause ? 'rgba(91,200,255,0.5)' : 'rgba(255,177,97,0.5)'
+      ctx.stroke()
+    }
+  }
+
+  /** A highlighted cause/effect dot: full brightness plus a direction-coded ring. */
+  private drawRelated(p: Particle) {
+    const { ctx } = this
+    const [r, g, b] = p.colorRgb
+    const isCause = this.relCauses.has(p.ev.id)
+    const R = Math.max(2.6, p.r * 1.5)
+    ctx.beginPath()
+    ctx.fillStyle = `rgba(${r},${g},${b},${Math.min(1, p.alpha + 0.2).toFixed(3)})`
+    ctx.arc(p.x, p.y, R, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.beginPath()
+    ctx.lineWidth = 1.4
+    ctx.strokeStyle = isCause ? 'rgba(91,200,255,0.95)' : 'rgba(255,177,97,0.95)'
+    ctx.arc(p.x, p.y, R + 2.2, 0, Math.PI * 2)
+    ctx.stroke()
   }
 
   private drawEmphasis(p: Particle) {
@@ -386,7 +476,7 @@ export class ParticleField {
     let best: PickResult | null = null
     let bestScore = -Infinity
     const r2 = radius * radius
-    for (const p of this.particles.values()) {
+    for (const p of this.laid) {
       if (!p.visible || p.alpha < 0.4) continue
       const dx = p.x - px
       const dy = p.y - py
@@ -406,7 +496,7 @@ export class ParticleField {
 
   screenPosOf(id: string): { x: number; y: number } | null {
     const p = this.particles.get(id)
-    if (!p) return null
+    if (!p || !p.visible) return null
     return { x: p.x, y: p.y }
   }
 

@@ -42,6 +42,46 @@ function invert(kind: EventRelation['kind']): RelationKind {
   return 'same_movement'
 }
 
+/** Causes and effects of one event, both directions resolved. */
+export interface CausalLinks {
+  causes: Set<string>
+  effects: Set<string>
+}
+
+/**
+ * Precompute a bidirectional cause/effect index over the whole dataset, so the
+ * canvas can highlight an event's causal neighbourhood on hover without
+ * scanning every event each time. Relations are stored one-way on events
+ * (from Wikidata's "has cause"/"has effect"); this folds in the inverses.
+ */
+export function buildCausalIndex(
+  events: HistEvent[],
+  byId: Map<string, HistEvent>,
+): Map<string, CausalLinks> {
+  const idx = new Map<string, CausalLinks>()
+  const entry = (id: string): CausalLinks => {
+    let e = idx.get(id)
+    if (!e) {
+      e = { causes: new Set(), effects: new Set() }
+      idx.set(id, e)
+    }
+    return e
+  }
+  for (const ev of events) {
+    for (const rel of ev.relations ?? []) {
+      if (!byId.has(rel.id) || rel.id === ev.id) continue
+      if (rel.kind === 'caused_by') {
+        entry(ev.id).causes.add(rel.id)
+        entry(rel.id).effects.add(ev.id)
+      } else if (rel.kind === 'led_to') {
+        entry(ev.id).effects.add(rel.id)
+        entry(rel.id).causes.add(ev.id)
+      }
+    }
+  }
+  return idx
+}
+
 /**
  * Turn a single event into a set of *labelled* onward paths, so connections are
  * educationally meaningful rather than a generic "you might also like" list.

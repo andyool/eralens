@@ -7,7 +7,9 @@ const MONTHS = [
 ]
 
 /** Format a deep-time / BCE / CE year on its own. */
-export function formatYear(year: number): string {
+export function formatYear(rawYear: number): string {
+  // Views can land on fractional years (sub-year zoom); labels stay whole.
+  const year = Math.round(rawYear)
   const bp = PRESENT_YEAR - year
   if (bp >= 1_000_000_000) return `${(bp / 1_000_000_000).toFixed(1)} billion years ago`
   if (bp >= 1_000_000) return `${(bp / 1_000_000).toFixed(bp >= 1e7 ? 0 : 1)} million years ago`

@@ -161,12 +161,17 @@ export interface AxisTick {
   major: boolean
 }
 
-// Candidate tick steps (in years) from fine to geological.
+// Candidate tick steps (in years) from sub-day to geological, so the scale
+// stays labelled whether you're looking at an afternoon or an eon.
 const TICK_STEPS = [
+  1 / 365.25, 7 / 365.25, 1 / 12, 0.25,
   1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 25_000, 50_000, 100_000, 250_000,
   500_000, 1_000_000, 5_000_000, 10_000_000, 50_000_000, 100_000_000, 500_000_000, 1_000_000_000,
   5_000_000_000,
 ]
+
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const CUM_DAYS = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
 
 function shortYearLabel(year: number): string {
   const bp = PRESENT_YEAR - year
@@ -176,6 +181,17 @@ function shortYearLabel(year: number): string {
   if (year < 0) return `${Math.abs(Math.round(year)).toLocaleString()} BCE`
   if (year === 0) return '1 BCE'
   return `${Math.round(year)}`
+}
+
+/** Label for a fractional-year tick: "Oct 1066" at month scale, "Oct 14" finer. */
+function subYearLabel(y: number, step: number): string {
+  const yr = Math.floor(y)
+  const doy = Math.min(364, Math.floor((y - yr) * 365.25))
+  let m = 11
+  while (m > 0 && CUM_DAYS[m] > doy) m--
+  if (step >= 1 / 13) return `${MONTH_ABBR[m]} ${yr < 0 ? `${-yr} BCE` : yr}`
+  const day = doy - CUM_DAYS[m] + 1
+  return `${MONTH_ABBR[m]} ${day}`
 }
 
 /**
@@ -201,7 +217,13 @@ export function axisTicks(view: TimeView, width: number, minGapPx = 64): AxisTic
     const x = fraction * width
     if (x - lastX < minGapPx) continue
     lastX = x
-    ticks.push({ year: y, fraction, label: shortYearLabel(y), major: y === 0 || y % (step * 5) === 0 })
+    if (step < 1) {
+      // Sub-year scale: month/day labels; integer years read as major.
+      const major = Math.abs(y - Math.round(y)) < step / 2
+      ticks.push({ year: y, fraction, label: major ? shortYearLabel(Math.round(y)) : subYearLabel(y, step), major })
+    } else {
+      ticks.push({ year: y, fraction, label: shortYearLabel(y), major: y === 0 || y % (step * 5) === 0 })
+    }
   }
   return ticks
 }

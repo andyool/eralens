@@ -21,6 +21,7 @@ export const CATEGORIES: Category[] = [
   { id: 'disasters', label: 'Disasters', icon: '🌊', color: '#ff7b54', blurb: 'Plagues, quakes, famines and catastrophe.' },
   { id: 'rights', label: 'Rights & Society', icon: '✊', color: '#ffb3c1', blurb: 'Movements for freedom, suffrage and justice.' },
   { id: 'economics', label: 'Economy & Trade', icon: '💱', color: '#9bd76b', blurb: 'Money, markets, trade routes and industry.' },
+  { id: 'sports', label: 'Sports & Games', icon: '🏅', color: '#7fc4a8', blurb: 'Tournaments, matches, seasons and the contests people gather for.' },
 ]
 
 export const CATEGORY_MAP: Record<CategoryId, Category> = Object.fromEntries(

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { HistEvent, TimeView } from '../lib/types'
 import { ParticleField } from '../lib/particleField'
 import type { Forest, HNode } from '../lib/hierarchy'
+import type { CausalLinks } from '../lib/related'
 import { panView, zoomView } from '../lib/timeMapping'
 import { compactDate } from '../lib/dateFormat'
 import { categoryColor } from '../data/categories'
@@ -14,12 +15,15 @@ interface Props {
   onViewChange: (v: TimeView) => void
   nodePredicate: (node: HNode) => boolean
   eventMatches: (ev: HistEvent) => boolean
+  causalOf: (id: string) => CausalLinks | undefined
   selectedId: string | null
   onSelect: (id: string | null) => void
   onDrill: (id: string) => void
   reducedMotion: boolean
   showHint: boolean
 }
+
+const NO_LINKS: ReadonlySet<string> = new Set()
 
 export default function TimeCanvas({
   events,
@@ -28,6 +32,7 @@ export default function TimeCanvas({
   onViewChange,
   nodePredicate,
   eventMatches,
+  causalOf,
   selectedId,
   onSelect,
   onDrill,
@@ -102,9 +107,17 @@ export default function TimeCanvas({
     if (!field) return
     if (!emphasisId) {
       field.setEmphasis(null)
+      field.setRelated(NO_LINKS as Set<string>, NO_LINKS as Set<string>)
       return
     }
     field.setEmphasis(emphasisId)
+    // Light up the causal neighbourhood: causes and effects of the hovered or
+    // selected event stay bright while the rest of the field fades back.
+    const links = causalOf(emphasisId)
+    field.setRelated(
+      links?.causes ?? (NO_LINKS as Set<string>),
+      links?.effects ?? (NO_LINKS as Set<string>),
+    )
     const ev = forest.map.get(emphasisId)?.ev
     if (!ev?.wikiTitle) return
     let cancelled = false
@@ -122,7 +135,7 @@ export default function TimeCanvas({
     return () => {
       cancelled = true
     }
-  }, [emphasisId, forest, selectedId])
+  }, [emphasisId, forest, selectedId, causalOf])
 
   // ── Pointer interaction ──────────────────────────────────────────────
   const pointers = useRef(new Map<number, { x: number; y: number }>())
@@ -318,6 +331,16 @@ export default function TimeCanvas({
             {hoverNode && hoverNode.children.length > 0 && (
               <span className="hc-contains">· contains {hoverNode.descendantCount} · click to open</span>
             )}
+            {(() => {
+              const links = causalOf(hoverEvent.id)
+              if (!links || links.causes.size + links.effects.size === 0) return null
+              return (
+                <span className="hc-contains">
+                  {links.causes.size > 0 && ` · ${links.causes.size} cause${links.causes.size > 1 ? 's' : ''}`}
+                  {links.effects.size > 0 && ` · ${links.effects.size} effect${links.effects.size > 1 ? 's' : ''}`}
+                </span>
+              )
+            })()}
           </div>
         </div>
       )}
