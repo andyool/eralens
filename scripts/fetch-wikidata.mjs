@@ -23,16 +23,69 @@ const USER_AGENT = 'EraLens/0.1 (https://github.com/; historical timeline clone)
 const LIMIT = Number(process.env.ERALENS_LIMIT ?? 6000)
 const MIN_SITELINKS = Number(process.env.ERALENS_MIN_SITELINKS ?? 10)
 
-// P585 = point in time, P31 = instance of, P18 = image, P625 = coordinates,
+// One query over all of history times out on WDQS (60 s cap), so we slice the
+// timeline into ranges and run one small query per slice. Each slice first
+// narrows to the top-N most-sitelinked dated items (a cheap range scan thanks
+// to hint:rangeSafe), then joins the detail properties only for those.
+const TIME_SLICES = [
+  [-3000, 500],
+  [500, 1200],
+  [1200, 1500],
+  [1500, 1700],
+  [1700, 1800],
+  [1800, 1850],
+  [1850, 1900],
+  [1900, 1915],
+  [1915, 1930],
+  [1930, 1945],
+  [1945, 1960],
+  [1960, 1970],
+  [1970, 1980],
+  [1980, 1990],
+  [1990, 2000],
+  [2000, 2010],
+  [2010, 2020],
+  [2020, 2030],
+]
+
+function isoYear(year) {
+  const abs = String(Math.abs(year)).padStart(4, '0')
+  return `${year < 0 ? '-' : ''}${abs}-01-01T00:00:00Z`
+}
+
+// P585 = point in time, P580 = start time (wars, pandemics and other duration
+// events carry P580 instead of P585 — we date those by their start and query
+// them separately, because a UNION defeats WDQS's range-scan optimisation).
+// P31 = instance of, P18 = image, P625 = coordinates, P582 = end time,
 // P361 = "part of" (battle → war → conflict) which gives us the hierarchy.
-const QUERY = `
+function sliceQuery(fromYear, toYear, limit, dateProp) {
+  return `
 SELECT ?item ?itemLabel ?date ?image ?coord ?links ?enTitle
+       (MIN(?end) AS ?endDate)
        (GROUP_CONCAT(DISTINCT ?typeLabel; separator="|") AS ?types)
        (GROUP_CONCAT(DISTINCT ?partOf; separator="|") AS ?parents) WHERE {
-  ?item wdt:P585 ?date .
-  ?item wikibase:sitelinks ?links .
-  FILTER(?links >= ${MIN_SITELINKS})
-  ?item wdt:P31 ?type .
+  {
+    SELECT DISTINCT ?item ?date ?links WHERE {
+      ?item wdt:${dateProp} ?date .
+      hint:Prior hint:rangeSafe true .
+      FILTER("${isoYear(fromYear)}"^^xsd:dateTime <= ?date && ?date < "${isoYear(toYear)}"^^xsd:dateTime)
+      ?item wikibase:sitelinks ?links .
+      FILTER(?links >= ${MIN_SITELINKS})
+      # Calendar units (years, decades, …) carry P585 + huge sitelink counts
+      # and would crowd out real events — drop them.
+      MINUS {
+        VALUES ?junkType { wd:Q577 wd:Q3186692 wd:Q39911 wd:Q578 wd:Q36507 wd:Q18340514 }
+        ?item wdt:P31 ?junkType .
+      }
+    }
+    ORDER BY DESC(?links)
+    LIMIT ${limit}
+  }
+  OPTIONAL {
+    ?item wdt:P31 ?type .
+    ?type rdfs:label ?typeLabel . FILTER(LANG(?typeLabel) = "en")
+  }
+  OPTIONAL { ?item wdt:P582 ?end . }
   OPTIONAL { ?item wdt:P18 ?image . }
   OPTIONAL { ?item wdt:P625 ?coord . }
   OPTIONAL { ?item wdt:P361 ?partOf . }
@@ -41,13 +94,11 @@ SELECT ?item ?itemLabel ?date ?image ?coord ?links ?enTitle
              schema:isPartOf <https://en.wikipedia.org/> ;
              schema:name ?enTitle .
   }
-  ?type rdfs:label ?typeLabel . FILTER(LANG(?typeLabel) = "en")
-  SERVICE wikibase:label { bd:serviceLabel bd:serviceParam wikibase:language "en" . }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "en" . }
 }
 GROUP BY ?item ?itemLabel ?date ?image ?coord ?links ?enTitle
-ORDER BY DESC(?links)
-LIMIT ${LIMIT}
 `
+}
 
 const CATEGORY_RULES = [
   [/(war|battle|siege|conflict|invasion|revolt|revolution|campaign)/i, ['wars']],
@@ -92,27 +143,45 @@ function significanceFromLinks(links) {
   return Math.max(40, Math.min(98, Math.round(s)))
 }
 
-async function main() {
-  console.log(`Querying Wikidata for up to ${LIMIT} events (min ${MIN_SITELINKS} sitelinks)…`)
-  let json
+async function runQuery(query) {
   for (let attempt = 1; attempt <= 4; attempt++) {
     try {
-      const res = await fetch(`${ENDPOINT}?query=${encodeURIComponent(QUERY)}&format=json`, {
+      const res = await fetch(`${ENDPOINT}?query=${encodeURIComponent(query)}&format=json`, {
         headers: { Accept: 'application/sparql-results+json', 'User-Agent': USER_AGENT },
+        signal: AbortSignal.timeout(70_000),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      json = await res.json()
-      break
+      return await res.json()
     } catch (err) {
-      console.warn(`Attempt ${attempt} failed: ${err.message}`)
+      console.warn(`  attempt ${attempt} failed: ${err.message}`)
       if (attempt === 4) throw err
       await new Promise((r) => setTimeout(r, attempt * 2000))
+    }
+  }
+}
+
+async function main() {
+  console.log(`Querying Wikidata for up to ${LIMIT} events (min ${MIN_SITELINKS} sitelinks)…`)
+  const perSlice = Math.ceil(LIMIT / TIME_SLICES.length)
+  const bindings = []
+  // P585 (point in time) first so it wins the client-side dedupe when an item
+  // carries both; P580 (start time) adds duration events like wars/pandemics.
+  for (const [dateProp, limit] of [
+    ['P585', perSlice],
+    ['P580', Math.ceil(perSlice / 2)],
+  ]) {
+    for (const [from, to] of TIME_SLICES) {
+      const json = await runQuery(sliceQuery(from, to, limit, dateProp))
+      const rows = json.results.bindings
+      console.log(`  ${dateProp} ${from} → ${to}: ${rows.length} rows`)
+      bindings.push(...rows)
+      await new Promise((r) => setTimeout(r, 500)) // be polite to WDQS
     }
   }
 
   const seen = new Set()
   const raw = []
-  for (const row of json.results.bindings) {
+  for (const row of bindings) {
     const qid = row.item.value.split('/').pop()
     if (seen.has(qid)) continue
     seen.add(qid)
@@ -120,6 +189,7 @@ async function main() {
     if (!date) continue
     const title = row.itemLabel?.value ?? qid
     if (/^Q\d+$/.test(title)) continue // skip unlabelled entities
+    if (/^\d+s?( BCE?)?$/.test(title)) continue // backstop: calendar years/decades
     const links = Number(row.links.value)
     let coordinates
     if (row.coord?.value) {
@@ -130,6 +200,7 @@ async function main() {
       .split('|')
       .map((u) => u.split('/').pop())
       .filter(Boolean)
+    const end = row.endDate?.value ? parseDate(row.endDate.value) : null
     raw.push({
       qid,
       parentQids,
@@ -139,6 +210,7 @@ async function main() {
         year: date.year,
         month: date.month,
         day: date.day,
+        endYear: end && end.year > date.year ? end.year : undefined,
         precision: date.precision,
         type: 'event',
         categories: typesToCategories(row.types?.value ?? ''),
