@@ -647,29 +647,24 @@ button {
 }
 
 /* Hover chip */
+/* Docked at the bottom centre of the field, out of the way of the dots. */
 .hover-chip {
   position: absolute;
-  transform: translate(-50%, calc(-100% - 14px));
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
   pointer-events: none;
   background: var(--panel-solid);
   border: 1px solid var(--panel-border-strong);
   border-radius: 10px;
-  padding: 7px 11px;
+  padding: 8px 14px;
   box-shadow: var(--shadow);
-  max-width: 240px;
+  max-width: min(560px, 86%);
+  text-align: center;
   z-index: 15;
 }
-.hover-chip::after {
-  content: '';
-  position: absolute;
-  left: 50%;
-  bottom: -6px;
-  transform: translateX(-50%) rotate(45deg);
-  width: 10px;
-  height: 10px;
-  background: var(--panel-solid);
-  border-right: 1px solid var(--panel-border-strong);
-  border-bottom: 1px solid var(--panel-border-strong);
+.hover-chip .hc-meta {
+  justify-content: center;
 }
 .hover-chip .hc-title {
   font-size: 13px;

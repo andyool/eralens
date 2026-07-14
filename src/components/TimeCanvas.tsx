@@ -404,14 +404,7 @@ export default function TimeCanvas({
       />
 
       {hoverEvent && chip && (
-        <div
-          className="hover-chip"
-          style={{
-            left: Math.max(120, Math.min(chip.x, (wrapRef.current?.clientWidth ?? 4000) - 120)),
-            top: chip.y,
-          }}
-          aria-hidden
-        >
+        <div className="hover-chip" aria-hidden>
           <div className="hc-title">{hoverEvent.title}</div>
           <div className="hc-meta">
             <span className="hc-dot" style={{ background: categoryColor(hoverEvent.categories[0]) }} />
@@ -448,7 +441,7 @@ export default function TimeCanvas({
         </div>
       )}
 
-      {showHint && (
+      {showHint && !hoverEvent && (
         <div className="canvas-hint">
           Drag to pan · scroll to zoom · shift-drag to select a range · click a ringed dot to open
           its timeline
