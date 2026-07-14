@@ -3,9 +3,8 @@ import type { CategoryId, Era, HistEvent, TimeView } from './lib/types'
 import { loadEvents, EVENTS, type CivDef, type RegionDef } from './data/events'
 import { CATEGORIES, categoryColor } from './data/categories'
 import { MIN_YEAR, MAX_YEAR, clampView, viewAround, viewFromSpan, viewMidYear } from './lib/timeMapping'
-import { buildForest, decimalYear, type HNode } from './lib/hierarchy'
+import { buildForest, type HNode } from './lib/hierarchy'
 import { buildCausalIndex } from './lib/related'
-import { canFetchMoments, fetchSectionMoments } from './lib/wikiMoments'
 import { discover, type LuckyMode } from './lib/discover'
 import { sound } from './lib/sound'
 import { usePrefersReducedMotion, useMediaQuery } from './hooks'
@@ -19,6 +18,7 @@ import Breadcrumb from './components/Breadcrumb'
 import TimeCanvas from './components/TimeCanvas'
 import Navigator from './components/Navigator'
 import EventCard from './components/EventCard'
+import StoryView from './components/StoryView'
 import ListView from './components/ListView'
 import MapView from './components/MapView'
 import ComparisonView from './components/ComparisonView'
@@ -53,6 +53,10 @@ export default function App() {
   // A stack so you can step into a war, then a campaign, and back out again.
   const [focusStack, setFocusStack] = useState<{ id: string; returnView: TimeView }[]>([])
   const focusId = focusStack.length > 0 ? focusStack[focusStack.length - 1].id : null
+
+  // The deepest layer: a leaf event opened as a full-screen illustrated story
+  // built from its Wikipedia article sections.
+  const [storyEvent, setStoryEvent] = useState<HistEvent | null>(null)
 
   // View history for the ↩ Back button — recorded on jumps (eras, searches,
   // range selections), not on every wheel tick.
@@ -234,16 +238,20 @@ export default function App() {
     setHintDone(true)
   }, [])
 
-// Escape steps out: first the open card, then one level of focus.
+  // Escape steps out: the open card first, then the story, then focus.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (selectedId) return // TimeCanvas/card handle closing the selection
+      if (storyEvent) {
+        setStoryEvent(null)
+        return
+      }
       if (focusStack.length > 0) exitFocus()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedId, focusStack.length, exitFocus])
+  }, [selectedId, storyEvent, focusStack.length, exitFocus])
 
   /** Full reset: leave focus mode entirely and show all of time. */
   const resetAll = useCallback(() => {
@@ -319,26 +327,13 @@ export default function App() {
         return
       }
       const ev = node.ev
-      if (canFetchMoments(ev)) {
-        // Dive: the most granular Wikipedia pages become the moments — fetch
-        // the article's sections and spread them across the event's span.
-        setToast({ title: 'Diving in', desc: `Fetching the moments of “${ev.title}”…`, color: '#8b9dff' })
-        fetchSectionMoments(ev).then((moments) => {
-          if (moments.length > 0) {
-            setEvents((prev) =>
-              prev.some((e) => e.id === moments[0].id) ? prev : [...prev, ...moments],
-            )
-            const years = moments.map((m) => decimalYear(m))
-            enterFocus(id, [
-              Math.min(node.spanStart, ...years),
-              Math.max(node.spanEnd, ...years),
-            ])
-            setToast({ title: ev.title, desc: `${moments.length} moments from its Wikipedia article.`, color: '#8b9dff' })
-          } else {
-            setToast(null)
-            select(id)
-          }
-        })
+      if (ev.wikiTitle && ev.tier !== 'moment') {
+        // The last layer: no more events inside — open the event as a story
+        // timeline built from its Wikipedia article.
+        setSelectedId(null)
+        setStoryEvent(ev)
+        setHintDone(true)
+        if (soundOn) sound.select()
         return
       }
       select(id)
@@ -560,6 +555,10 @@ export default function App() {
               <div className="t-name">{toast.title}</div>
               <div className="t-desc">{toast.desc}</div>
             </div>
+          )}
+
+          {storyEvent && mode === 'timeline' && (
+            <StoryView event={storyEvent} onClose={() => setStoryEvent(null)} />
           )}
 
           {selectedEvent && (

@@ -191,10 +191,28 @@ export class ParticleField {
 
     // 1. Pick the level-of-detail node set for this zoom. Synthetic time
     //    buckets always open — only real containers collapse to a dot.
-    const visibleNodes = selectVisibleNodes(this.forest.roots, {
-      intersects: (n) => n.spanEnd >= view.startYear && n.spanStart <= view.endYear,
+    const intersects = (n: HNode) => n.spanEnd >= view.startYear && n.spanStart <= view.endYear
+    let visibleNodes = selectVisibleNodes(this.forest.roots, {
+      intersects,
       expandable: (n) => isTimeBucket(n) || xOf(n.spanEnd) - xOf(n.spanStart) >= EXPAND_PX,
     })
+
+    // Sparse views show EVERYTHING: when few nodes survive LOD, collapsed
+    // sub-containers would silently swallow their children ("contains 7" but
+    // three dots). Below this population we lay out every intersecting real
+    // node — containers keep their ring and stay clickable alongside their
+    // children.
+    if (visibleNodes.length < 250) {
+      const all: HNode[] = []
+      const stack = [...this.forest.roots]
+      while (stack.length > 0) {
+        const n = stack.pop()!
+        if (!intersects(n)) continue
+        if (!isTimeBucket(n)) all.push(n)
+        for (const c of n.children) stack.push(c)
+      }
+      if (all.length <= 500) visibleNodes = all
+    }
 
     // 2. Reset everyone, then place the visible (and filter-passing) nodes at
     //    their actual date on the axis.
@@ -209,8 +227,12 @@ export class ParticleField {
       if (!this.predicate(node)) continue
       const p = this.particles.get(node.ev.id)
       if (!p) continue
+      const tx = xOf(decimalYear(node.ev))
+      // A container's span can intersect the view while its own start date
+      // sits far off screen — don't let invisible dots distort the layout.
+      if (tx < -40 || tx > width + 40) continue
       p.visible = true
-      p.tx = xOf(decimalYear(node.ev))
+      p.tx = tx
       p.tr = p.aggregate ? aggregateRadius(node) : baseRadius(node.ev) * (p.illustrative ? 0.82 : 1)
       sumArea += Math.PI * p.tr * p.tr
       laid.push(p)

@@ -5,7 +5,6 @@ import { CATEGORY_MAP, categoryColor } from '../data/categories'
 import { formatEventDate, compactDate } from '../lib/dateFormat'
 import { relatedEvents } from '../lib/related'
 import { fetchWikiSummary, wikipediaUrl, wikidataUrl, type WikiSummary } from '../lib/wiki'
-import { canFetchMoments } from '../lib/wikiMoments'
 
 interface Props {
   event: HistEvent
@@ -118,9 +117,9 @@ export default function EventCard({ event, events, forest, onSelectEvent, onDril
           {summary} {wiki?.extract && <span className="src">— via Wikipedia</span>}
         </p>
 
-        {children.length === 0 && canFetchMoments(event) && (
+        {children.length === 0 && event.wikiTitle && event.tier !== 'moment' && (
           <div className="card-section">
-            <h3>Moments</h3>
+            <h3>The story</h3>
             <button
               className="zoom-in-btn"
               onClick={() => {
@@ -128,7 +127,7 @@ export default function EventCard({ event, events, forest, onSelectEvent, onDril
                 onClose()
               }}
             >
-              ⤵ Dive into this event's moments
+              ⤵ Open the story timeline — the blow-by-blow from Wikipedia
             </button>
           </div>
         )}

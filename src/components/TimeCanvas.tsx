@@ -48,6 +48,7 @@ export default function TimeCanvas({
 
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [chip, setChip] = useState<{ x: number; y: number } | null>(null)
+  const [hoverThumb, setHoverThumb] = useState<string | null>(null)
 
   const visibleSorted = useMemo(
     () =>
@@ -121,11 +122,13 @@ export default function TimeCanvas({
       links?.causes ?? (NO_LINKS as Set<string>),
       links?.effects ?? (NO_LINKS as Set<string>),
     )
+    setHoverThumb(null)
     const ev = forest.map.get(emphasisId)?.ev
     if (!ev?.wikiTitle) return
     let cancelled = false
     fetchWikiSummary(ev).then((s) => {
       if (cancelled || !s?.thumbnail) return
+      setHoverThumb(s.thumbnail)
       const img = new Image()
       img.crossOrigin = 'anonymous'
       img.onload = () => {
@@ -405,6 +408,8 @@ export default function TimeCanvas({
 
       {hoverEvent && chip && (
         <div className="hover-chip" aria-hidden>
+          {hoverThumb && <img className="hc-thumb" src={hoverThumb} alt="" />}
+          <div>
           <div className="hc-title">{hoverEvent.title}</div>
           <div className="hc-meta">
             <span className="hc-dot" style={{ background: categoryColor(hoverEvent.categories[0]) }} />
@@ -422,6 +427,7 @@ export default function TimeCanvas({
                 </span>
               )
             })()}
+          </div>
           </div>
         </div>
       )}
