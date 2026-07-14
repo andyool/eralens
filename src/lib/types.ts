@@ -29,6 +29,7 @@ export type EventType =
   | 'founding'
   | 'construction'
   | 'exploration'
+  | 'moment'
 
 export type CategoryId =
   | 'cosmos'
@@ -53,6 +54,13 @@ export interface EventRelation {
   id: string
   kind: 'led_to' | 'caused_by' | 'same_movement'
 }
+
+/**
+ * Depth of a node in the containment hierarchy. A war contains battles contains
+ * moments; an era contains periods. Tiers are a hint for styling/aggregation —
+ * the actual tree is defined by `parentId`.
+ */
+export type EventTier = 'era' | 'period' | 'event' | 'moment'
 
 export interface HistEvent {
   id: string
@@ -87,6 +95,25 @@ export interface HistEvent {
   wikidataId?: string
   /** Explicit curated relationships (causal / movement). */
   relations?: EventRelation[]
+
+  // ── Containment hierarchy (moments ⊂ events ⊂ periods ⊂ eras) ──────────
+  /** Id of the containing event/period/war. Absent = a top-level node. */
+  parentId?: string
+  /** Optional tier hint. Inferred from depth when absent. */
+  tier?: EventTier
+  /** Order within the parent — used to spread sub-moments that lack a precise time. */
+  sequence?: number
+  /**
+   * Position within the day (0..1) for sub-day moments (e.g. phases of a
+   * battle), so they spread along the axis when zoomed to a single day.
+   */
+  dayFraction?: number
+  /**
+   * True for generated placeholder sub-moments that exist only to demonstrate
+   * density and drill-down. These never assert specific historical facts and
+   * are always visually badged as illustrative.
+   */
+  illustrative?: boolean
 }
 
 export interface Category {

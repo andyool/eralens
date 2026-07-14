@@ -90,14 +90,20 @@ export function yearAtFullAxisFraction(frac: number): number {
   return unwarp(w)
 }
 
+/** The perceptual (warp-space) midpoint year of a view. */
+export function viewMidYear(view: TimeView): number {
+  return unwarp((warp(view.startYear) + warp(view.endYear)) / 2)
+}
+
 /** Clamp a view to the valid domain and keep start strictly older than end. */
 export function clampView(view: TimeView): TimeView {
   let startYear = Math.max(MIN_YEAR, Math.min(view.startYear, MAX_YEAR))
   let endYear = Math.max(MIN_YEAR, Math.min(view.endYear, MAX_YEAR))
   if (startYear >= endYear) {
-    // Keep a minimum span so the view never collapses.
+    // Keep a tiny minimum span so the view never collapses, but allow sub-year
+    // zoom so the moments inside a single day (e.g. a battle) can spread out.
     const mid = (startYear + endYear) / 2
-    const minHalfSpan = 0.5
+    const minHalfSpan = 0.0004
     startYear = Math.max(MIN_YEAR, mid - minHalfSpan)
     endYear = Math.min(MAX_YEAR, mid + minHalfSpan)
   }
@@ -133,6 +139,19 @@ export function panView(view: TimeView, fraction: number): TimeView {
 export function viewAround(year: number, padWarp = 70): TimeView {
   const w = warp(year)
   return clampView({ startYear: unwarp(w + padWarp), endYear: unwarp(Math.max(WARP_MIN, w - padWarp)) })
+}
+
+/**
+ * A view that frames a node's [spanStart, spanEnd] with a little breathing room,
+ * used when you drill into a container. Works in warped space so a one-day
+ * battle and a thousand-year empire both zoom to a sensible window.
+ */
+export function viewFromSpan(spanStart: number, spanEnd: number, padFactor = 0.3): TimeView {
+  // Pad in year-space with a small floor: proportional room for wide spans,
+  // and a fraction-of-a-day floor so an instant zooms tight enough to open up.
+  const span = Math.max(0, spanEnd - spanStart)
+  const pad = Math.max(span * padFactor, 0.0004)
+  return clampView({ startYear: spanStart - pad, endYear: spanEnd + pad })
 }
 
 export interface AxisTick {

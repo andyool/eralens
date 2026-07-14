@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { CategoryId, Era, HistEvent, TimeView } from './lib/types'
 import { loadEvents, EVENTS } from './data/events'
 import { CATEGORIES } from './data/categories'
-import { MIN_YEAR, MAX_YEAR, viewAround } from './lib/timeMapping'
+import { MIN_YEAR, MAX_YEAR, viewAround, viewFromSpan, viewMidYear } from './lib/timeMapping'
+import { buildForest, type HNode } from './lib/hierarchy'
+import { generateIllustrative } from './lib/illustrative'
 import { discover, type LuckyMode } from './lib/discover'
 import { sound } from './lib/sound'
 import { usePrefersReducedMotion, useMediaQuery } from './hooks'
@@ -11,6 +13,7 @@ import SearchBox from './components/SearchBox'
 import Discover from './components/Discover'
 import Sidebar from './components/Sidebar'
 import EraRail from './components/EraRail'
+import Breadcrumb from './components/Breadcrumb'
 import TimeCanvas from './components/TimeCanvas'
 import Navigator from './components/Navigator'
 import EventCard from './components/EventCard'
@@ -27,13 +30,24 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [listView, setListView] = useState(false)
   const [soundOn, setSoundOn] = useState(false)
+  const [illustrativeOn, setIllustrativeOn] = useState(true)
   const [toast, setToast] = useState<{ title: string; desc: string; color: string } | null>(null)
   const [hintDone, setHintDone] = useState(false)
 
   const reducedMotion = usePrefersReducedMotion()
   const isMobile = useMediaQuery('(max-width: 860px)')
 
-  const byId = useMemo(() => new Map(events.map((e) => [e.id, e])), [events])
+  // Real events + optional illustrative sub-moments for density/drill-down.
+  const displayEvents = useMemo(
+    () => (illustrativeOn ? events.concat(generateIllustrative(events)) : events),
+    [events, illustrativeOn],
+  )
+  const forest = useMemo(() => buildForest(displayEvents), [displayEvents])
+  const containers = useMemo(
+    () => [...forest.map.values()].filter((n) => n.children.length > 0),
+    [forest],
+  )
+  const byId = useMemo(() => new Map(displayEvents.map((e) => [e.id, e])), [displayEvents])
 
   // Load the (optionally generated) dataset; fall back to the seed.
   useEffect(() => {
@@ -41,7 +55,6 @@ export default function App() {
     loadEvents().then((data) => {
       if (cancelled) return
       setEvents(data)
-      // Honour a deep link like ?event=moon-landing.
       const param = new URLSearchParams(location.search).get('event')
       if (param) {
         const ev = data.find((e) => e.id === param)
@@ -58,14 +71,13 @@ export default function App() {
 
   useEffect(() => {
     if (hintDone) return
-    const t = setTimeout(() => setHintDone(true), 7000)
+    const t = setTimeout(() => setHintDone(true), 8000)
     return () => clearTimeout(t)
   }, [hintDone])
 
-  // Auto-dismiss the toast.
   useEffect(() => {
     if (!toast) return
-    const t = setTimeout(() => setToast(null), 4200)
+    const t = setTimeout(() => setToast(null), 4600)
     return () => clearTimeout(t)
   }, [toast])
 
@@ -74,10 +86,12 @@ export default function App() {
     return (ev: HistEvent) => ev.categories.some((c) => activeCats.has(c))
   }, [activeCats])
 
+  // Counts reflect real (non-illustrative) events in the visible range.
   const counts = useMemo(() => {
     const m = new Map<CategoryId, number>()
     for (const cat of CATEGORIES) m.set(cat.id, 0)
     for (const ev of events) {
+      if (ev.illustrative) continue
       if (ev.year < view.startYear || ev.year > view.endYear) continue
       for (const c of ev.categories) m.set(c, (m.get(c) ?? 0) + 1)
     }
@@ -87,10 +101,23 @@ export default function App() {
   const visibleSorted = useMemo(
     () =>
       events
-        .filter((e) => e.year >= view.startYear && e.year <= view.endYear && predicate(e))
+        .filter((e) => !e.illustrative && e.year >= view.startYear && e.year <= view.endYear && predicate(e))
         .sort((a, b) => a.year - b.year),
     [events, view, predicate],
   )
+
+  // The deepest container whose span brackets the view's midpoint = "where you
+  // are" — robust to the padding drilling adds around a node.
+  const focusNode: HNode | null = useMemo(() => {
+    const mid = viewMidYear(view)
+    let best: HNode | null = null
+    for (const n of containers) {
+      if (n.spanStart <= mid && n.spanEnd >= mid) {
+        if (!best || n.depth > best.depth) best = n
+      }
+    }
+    return best
+  }, [containers, view])
 
   const selectedEvent = selectedId ? byId.get(selectedId) ?? null : null
 
@@ -127,6 +154,23 @@ export default function App() {
     [byId, soundOn, isMobile, updateUrl],
   )
 
+  // Zoom into a container's span (the "step down").
+  const drill = useCallback(
+    (id: string) => {
+      const node = forest.map.get(id)
+      if (!node) return
+      if (node.children.length > 0) {
+        setViewState(viewFromSpan(node.spanStart, node.spanEnd))
+        setActiveEraId(null)
+        setHintDone(true)
+        if (soundOn) sound.select()
+      } else {
+        select(id)
+      }
+    },
+    [forest, soundOn, select],
+  )
+
   const selectEra = useCallback(
     (era: Era) => {
       setViewState({ startYear: era.startYear, endYear: era.endYear })
@@ -151,7 +195,7 @@ export default function App() {
 
   const lucky = useCallback(
     (mode: LuckyMode) => {
-      const ev = discover(events, mode, new Date())
+      const ev = discover(events.filter((e) => !e.illustrative), mode, new Date())
       if (!ev) return
       setViewState(viewAround(ev.year))
       setActiveEraId(null)
@@ -163,6 +207,20 @@ export default function App() {
     },
     [events, soundOn, updateUrl],
   )
+
+  const toggleIllustrative = useCallback(() => {
+    setIllustrativeOn((on) => {
+      const next = !on
+      if (next) {
+        setToast({
+          title: 'Illustrative detail on',
+          desc: 'Placeholder sub-moments added so you can zoom into finer detail. These are not sourced facts — run the Wikidata fetch for real depth.',
+          color: '#f4a259',
+        })
+      }
+      return next
+    })
+  }, [])
 
   return (
     <div className="app">
@@ -189,6 +247,17 @@ export default function App() {
 
         <div className="header-actions">
           <Discover onPick={lucky} />
+          <button
+            className={`icon-btn ${illustrativeOn ? 'active' : ''}`}
+            aria-pressed={illustrativeOn}
+            onClick={toggleIllustrative}
+            title="Illustrative detail — placeholder sub-moments for density and drill-down"
+          >
+            <span className="glyph" aria-hidden>
+              ◎
+            </span>
+            <span className="hide-sm">Detail</span>
+          </button>
           <button
             className={`icon-btn ${listView ? 'active' : ''}`}
             aria-pressed={listView}
@@ -232,18 +301,28 @@ export default function App() {
             </div>
           ) : (
             <TimeCanvas
-              events={events}
+              events={displayEvents}
+              forest={forest}
               view={view}
               onViewChange={setView}
               predicate={predicate}
               selectedId={selectedId}
               onSelect={(id) => select(id, false)}
+              onDrill={drill}
               reducedMotion={reducedMotion}
               showHint={!hintDone}
             />
           )}
 
           {!listView && <EraRail activeEraId={activeEraId} onSelect={selectEra} />}
+
+          {!listView && (
+            <Breadcrumb
+              focus={focusNode}
+              onHome={() => setView(FULL_VIEW)}
+              onCrumb={(node) => setView(viewFromSpan(node.spanStart, node.spanEnd))}
+            />
+          )}
 
           {toast && (
             <div className="toast" style={{ ['--toast-color' as string]: toast.color }} role="status">
@@ -257,8 +336,9 @@ export default function App() {
               <EventCard
                 event={selectedEvent}
                 events={events}
-                byId={byId}
+                forest={forest}
                 onSelectEvent={(id) => select(id, true)}
+                onDrill={drill}
                 onClose={() => select(null)}
               />
             </div>
@@ -266,7 +346,7 @@ export default function App() {
         </div>
       </div>
 
-      <Navigator view={view} events={events} onChange={setView} />
+      <Navigator view={view} events={displayEvents} onChange={setView} />
     </div>
   )
 }

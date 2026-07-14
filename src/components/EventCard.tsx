@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { HistEvent } from '../lib/types'
+import type { Forest } from '../lib/hierarchy'
 import { CATEGORY_MAP, categoryColor } from '../data/categories'
 import { formatEventDate, compactDate } from '../lib/dateFormat'
 import { relatedEvents } from '../lib/related'
@@ -8,21 +9,27 @@ import { fetchWikiSummary, wikipediaUrl, wikidataUrl, type WikiSummary } from '.
 interface Props {
   event: HistEvent
   events: HistEvent[]
-  byId: Map<string, HistEvent>
+  forest: Forest
   onSelectEvent: (id: string) => void
+  onDrill: (id: string) => void
   onClose: () => void
 }
 
-export default function EventCard({ event, events, byId, onSelectEvent, onClose }: Props) {
+export default function EventCard({ event, events, forest, onSelectEvent, onDrill, onClose }: Props) {
   const [wiki, setWiki] = useState<WikiSummary | null>(null)
   const [imgOk, setImgOk] = useState(true)
   const [copied, setCopied] = useState(false)
 
   const accent = categoryColor(event.categories[0])
+  const realById = useMemo(() => new Map(events.map((e) => [e.id, e])), [events])
   const groups = useMemo(
-    () => relatedEvents(event, events, byId, 4),
-    [event, events, byId],
+    () => (event.illustrative ? [] : relatedEvents(event, events, realById, 4)),
+    [event, events, realById],
   )
+
+  const node = forest.map.get(event.id)
+  const parent = node?.parent ?? null
+  const children = node?.children ?? []
 
   useEffect(() => {
     setWiki(null)
@@ -44,15 +51,14 @@ export default function EventCard({ event, events, byId, onSelectEvent, onClose 
   const share = async () => {
     const url = `${location.origin}${location.pathname}?event=${encodeURIComponent(event.id)}`
     try {
-      if (navigator.share) {
-        await navigator.share({ title: event.title, url })
-      } else {
+      if (navigator.share) await navigator.share({ title: event.title, url })
+      else {
         await navigator.clipboard.writeText(url)
         setCopied(true)
         setTimeout(() => setCopied(false), 1600)
       }
     } catch {
-      /* user dismissed share sheet */
+      /* dismissed */
     }
   }
 
@@ -66,12 +72,7 @@ export default function EventCard({ event, events, byId, onSelectEvent, onClose 
     >
       <div className="card-media">
         {wiki?.thumbnail && imgOk ? (
-          <img
-            src={wiki.thumbnail}
-            alt={event.title}
-            onError={() => setImgOk(false)}
-            loading="lazy"
-          />
+          <img src={wiki.thumbnail} alt={event.title} onError={() => setImgOk(false)} loading="lazy" />
         ) : (
           <div className="media-fallback" aria-hidden>
             {CATEGORY_MAP[event.categories[0]]?.icon ?? '✦'}
@@ -85,11 +86,24 @@ export default function EventCard({ event, events, byId, onSelectEvent, onClose 
       </div>
 
       <div className="card-body">
+        {parent && (
+          <button className="card-parent" onClick={() => onSelectEvent(parent.ev.id)}>
+            ↑ Part of <strong>{parent.ev.title}</strong>
+          </button>
+        )}
+
         <h2>{event.title}</h2>
         <div className="card-sub">
           {event.location && <span>📍 {event.location}</span>}
           {event.people && event.people.length > 0 && <span>· {event.people.join(', ')}</span>}
         </div>
+
+        {event.illustrative && (
+          <div className="illustrative-note">
+            Illustrative placeholder — a sample sub-moment to demonstrate zooming in. Not a sourced
+            historical record.
+          </div>
+        )}
 
         <div className="card-tags">
           {event.categories.map((c) => (
@@ -101,9 +115,32 @@ export default function EventCard({ event, events, byId, onSelectEvent, onClose 
         </div>
 
         <p className="card-summary">
-          {summary}{' '}
-          {wiki?.extract && <span className="src">— via Wikipedia</span>}
+          {summary} {wiki?.extract && <span className="src">— via Wikipedia</span>}
         </p>
+
+        {children.length > 0 && (
+          <div className="card-section">
+            <h3>Contains {node!.descendantCount} moments</h3>
+            <button className="zoom-in-btn" onClick={() => { onDrill(event.id); onClose() }}>
+              ⤢ Zoom in to explore
+            </button>
+            {children.slice(0, 8).map((c) => (
+              <button key={c.ev.id} className="rel-item" onClick={() => onSelectEvent(c.ev.id)}>
+                <span className="ri-dot" style={{ background: categoryColor(c.ev.categories[0]) }} />
+                <span className="ri-title">
+                  {c.ev.title}
+                  {c.children.length > 0 && (
+                    <span style={{ color: 'var(--text-faint)' }}> · {c.descendantCount}</span>
+                  )}
+                </span>
+                <span className="ri-date">{compactDate(c.ev)}</span>
+              </button>
+            ))}
+            {children.length > 8 && (
+              <div className="rel-more">+{children.length - 8} more — zoom in to see them all</div>
+            )}
+          </div>
+        )}
 
         {groups.length > 0 && (
           <div className="card-section">
@@ -112,15 +149,8 @@ export default function EventCard({ event, events, byId, onSelectEvent, onClose 
               <div className="rel-group" key={g.kind}>
                 <div className="rel-kind">{g.label}</div>
                 {g.events.map((re) => (
-                  <button
-                    key={re.id}
-                    className="rel-item"
-                    onClick={() => onSelectEvent(re.id)}
-                  >
-                    <span
-                      className="ri-dot"
-                      style={{ background: categoryColor(re.categories[0]) }}
-                    />
+                  <button key={re.id} className="rel-item" onClick={() => onSelectEvent(re.id)}>
+                    <span className="ri-dot" style={{ background: categoryColor(re.categories[0]) }} />
                     <span className="ri-title">{re.title}</span>
                     <span className="ri-date">{compactDate(re)}</span>
                   </button>

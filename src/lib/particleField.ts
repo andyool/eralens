@@ -2,15 +2,18 @@ import type { HistEvent, TimeView } from './types'
 import { categoryColor } from '../data/categories'
 import { yearToX } from './timeMapping'
 import { baseRadius, selectionScore } from './significance'
+import { decimalYear, selectVisibleNodes, type Forest, type HNode } from './hierarchy'
 
 export interface PickResult {
   id: string
   x: number
   y: number
   dist: number
+  isAggregate: boolean
 }
 
 interface Particle {
+  node: HNode
   ev: HistEvent
   x: number
   y: number
@@ -23,14 +26,17 @@ interface Particle {
   color: string
   colorRgb: [number, number, number]
   visible: boolean
+  aggregate: boolean
+  illustrative: boolean
   seed: number
-  tau: number // per-particle smoothing time constant (ms)
+  tau: number
 }
 
 type FilterPredicate = (ev: HistEvent) => boolean
 
 const BUCKET_PX = 7
 const BASE_SPACING = 8
+const EXPAND_PX = 58 // a container wider than this on screen opens into its children
 const HALO_ALPHA = 0.9
 
 function hashId(id: string): number {
@@ -39,7 +45,6 @@ function hashId(id: string): number {
     h ^= id.charCodeAt(i)
     h = Math.imul(h, 16777619)
   }
-  // → [0,1)
   return ((h >>> 0) % 100000) / 100000
 }
 
@@ -49,10 +54,15 @@ function hexToRgb(hex: string): [number, number, number] {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
 }
 
+function aggregateRadius(node: HNode): number {
+  return Math.min(9.5, 2.6 + Math.log2(node.descendantCount + 1) * 1.0)
+}
+
 /**
- * The particle field. An imperative canvas renderer deliberately kept outside
- * React's render loop: it owns layout, the "fly into formation" animation and
- * cursor hit-testing, and only calls back out to report frames.
+ * The particle field. Imperative canvas renderer, kept outside React's render
+ * loop. It owns hierarchy-aware level-of-detail layout (wars collapse to a dot,
+ * then open into battles, then moments), the fly-into-formation animation and
+ * cursor hit-testing.
  */
 export class ParticleField {
   private canvas: HTMLCanvasElement
@@ -60,6 +70,7 @@ export class ParticleField {
   private width = 0
   private height = 0
 
+  private forest: Forest = { map: new Map(), roots: [] }
   private particles = new Map<string, Particle>()
   private ordered: Particle[] = []
   private view: TimeView = { startYear: -13_800_000_000, endYear: 2026 }
@@ -88,23 +99,29 @@ export class ParticleField {
     this.reducedMotion = v
   }
 
-  setEvents(events: HistEvent[]) {
+  setForest(forest: Forest) {
+    this.forest = forest
     this.particles.clear()
-    for (const ev of events) {
+    for (const node of forest.map.values()) {
+      const ev = node.ev
       const color = categoryColor(ev.categories[0])
+      const aggregate = node.children.length > 0
       this.particles.set(ev.id, {
+        node,
         ev,
         x: 0,
         y: 0,
         tx: 0,
         ty: 0,
         r: 0,
-        tr: baseRadius(ev),
+        tr: aggregate ? aggregateRadius(node) : baseRadius(ev),
         alpha: 0,
         tAlpha: 0,
         color,
         colorRgb: hexToRgb(color),
         visible: false,
+        aggregate,
+        illustrative: !!ev.illustrative,
         seed: hashId(ev.id),
         tau: 110 + hashId(ev.id + 'tau') * 120,
       })
@@ -143,46 +160,62 @@ export class ParticleField {
     this.ensureRunning()
   }
 
-  /** Compute target positions for the current view + filter. */
+  /** Level-of-detail layout for the current view + filter. */
   private layout(snap: boolean) {
     const { width, height, view } = this
     const centerY = height * 0.5
     const maxHalf = Math.max(20, Math.min(centerY, height - centerY) - 12)
     const pad = 10
+    const innerW = width - pad * 2
 
-    // Which particles are visible, and their raw x.
-    const visible: Particle[] = []
-    const slack = 0 // could widen the window; keep tight for crisp edges
+    const xOf = (year: number) => pad + yearToX(year, view, innerW)
+
+    // 1. Pick the level-of-detail node set for this zoom.
+    const visibleNodes = selectVisibleNodes(this.forest.roots, {
+      intersects: (n) => n.spanEnd >= view.startYear && n.spanStart <= view.endYear,
+      expandable: (n) => xOf(n.spanEnd) - xOf(n.spanStart) >= EXPAND_PX,
+    })
+
+    // 2. Reset everyone, then place the visible (and filter-passing) nodes.
     for (const p of this.particles.values()) {
-      const inRange = p.ev.year >= view.startYear - slack && p.ev.year <= view.endYear + slack
-      const passes = inRange && this.predicate(p.ev)
-      p.visible = passes
-      if (passes) {
-        const jitterX = (p.seed - 0.5) * 2.5
-        p.tx = pad + yearToX(p.ev.year, view, width - pad * 2) + jitterX
-        visible.push(p)
-      } else {
-        p.tAlpha = 0
-      }
+      p.visible = false
+      p.tAlpha = 0
     }
 
-    // Bucket by x to build the vertical "waveform" stacks.
+    const laid: Particle[] = []
+    for (const node of visibleNodes) {
+      if (!this.predicate(node.ev)) continue
+      const p = this.particles.get(node.ev.id)
+      if (!p) continue
+      p.visible = true
+      let x: number
+      if (p.aggregate) {
+        // Centre a collapsed container over its whole span.
+        x = (xOf(node.spanStart) + xOf(node.spanEnd)) / 2
+      } else {
+        const jitterX = (p.seed - 0.5) * 2.4
+        x = xOf(decimalYear(node.ev)) + jitterX
+      }
+      p.tx = x
+      p.tr = p.aggregate ? aggregateRadius(node) : baseRadius(node.ev) * (p.illustrative ? 0.82 : 1)
+      laid.push(p)
+    }
+
+    // 3. Vertical "waveform" stacking by x-bucket.
     const buckets = new Map<number, Particle[]>()
-    for (const p of visible) {
+    for (const p of laid) {
       const b = Math.round(p.tx / BUCKET_PX)
       const list = buckets.get(b) ?? []
       list.push(p)
       buckets.set(b, list)
     }
-
     for (const list of buckets.values()) {
-      // Most significant nearest the centre line → easier to hit & see.
-      list.sort((a, b) => b.ev.significance - a.ev.significance)
+      // Aggregates + significant events sit nearest the centre line.
+      list.sort((a, b) => Number(b.aggregate) - Number(a.aggregate) || b.ev.significance - a.ev.significance)
       const count = list.length
       const spacing = Math.min(BASE_SPACING, maxHalf / (count / 2 + 0.6))
       for (let i = 0; i < count; i++) {
         const p = list[i]
-        // slot 0 at centre, then alternate above/below.
         const step = Math.ceil(i / 2)
         const sign = i % 2 === 0 ? -1 : 1
         const jitterY = (hashId(p.ev.id + 'y') - 0.5) * spacing * 0.5
@@ -199,9 +232,7 @@ export class ParticleField {
         p.r = p.tr
       }
     } else {
-      // New arrivals start from their target x but slightly off, so they
-      // "fly in" rather than popping.
-      for (const p of visible) {
+      for (const p of laid) {
         if (p.alpha < 0.02) {
           p.x = p.tx
           p.y = this.height * 0.5
@@ -209,9 +240,8 @@ export class ParticleField {
       }
     }
 
-    // Keep a draw order: important + emphasised drawn last (on top).
     this.ordered = Array.from(this.particles.values()).sort(
-      (a, b) => a.ev.significance - b.ev.significance,
+      (a, b) => Number(a.aggregate) - Number(b.aggregate) || a.ev.significance - b.ev.significance,
     )
   }
 
@@ -274,22 +304,32 @@ export class ParticleField {
     const { ctx, width, height } = this
     ctx.clearRect(0, 0, width, height)
 
-    // Ordinary particles.
     for (const p of this.ordered) {
       if (p.alpha < 0.02) continue
       if (p.ev.id === this.emphasisId) continue
       const [r, g, b] = p.colorRgb
-      ctx.beginPath()
-      ctx.fillStyle = `rgba(${r},${g},${b},${(0.72 * p.alpha).toFixed(3)})`
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
-      ctx.fill()
+      if (p.aggregate) {
+        // Aggregate: filled dot + a thin outer ring signalling "opens up".
+        ctx.beginPath()
+        ctx.fillStyle = `rgba(${r},${g},${b},${(0.82 * p.alpha).toFixed(3)})`
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.beginPath()
+        ctx.lineWidth = 1.2
+        ctx.strokeStyle = `rgba(${r},${g},${b},${(0.5 * p.alpha).toFixed(3)})`
+        ctx.arc(p.x, p.y, p.r + 2.6, 0, Math.PI * 2)
+        ctx.stroke()
+      } else {
+        const a = (p.illustrative ? 0.4 : 0.74) * p.alpha
+        ctx.beginPath()
+        ctx.fillStyle = `rgba(${r},${g},${b},${a.toFixed(3)})`
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
+        ctx.fill()
+      }
     }
 
-    // Emphasised (hovered / selected) particle, drawn on top.
     const em = this.emphasisId ? this.particles.get(this.emphasisId) : null
-    if (em && em.alpha > 0.02) {
-      this.drawEmphasis(em)
-    }
+    if (em && em.alpha > 0.02) this.drawEmphasis(em)
   }
 
   private drawEmphasis(p: Particle) {
@@ -298,7 +338,6 @@ export class ParticleField {
     const pulseR = 1 + Math.sin(this.pulse * 3) * 0.06
     const R = Math.max(9, p.tr * 3.2) * pulseR
 
-    // Soft halo.
     const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, R * 2.4)
     grad.addColorStop(0, `rgba(${r},${g},${b},0.28)`)
     grad.addColorStop(1, `rgba(${r},${g},${b},0)`)
@@ -307,7 +346,6 @@ export class ParticleField {
     ctx.arc(p.x, p.y, R * 2.4, 0, Math.PI * 2)
     ctx.fill()
 
-    // Core: image (clipped) if available, else colour fill.
     ctx.save()
     ctx.beginPath()
     ctx.arc(p.x, p.y, R, 0, Math.PI * 2)
@@ -330,13 +368,20 @@ export class ParticleField {
       ctx.arc(p.x, p.y, R, 0, Math.PI * 2)
     }
 
-    // Ring.
     ctx.lineWidth = 2
     ctx.strokeStyle = `rgba(255,255,255,0.92)`
     ctx.stroke()
+
+    // A second ring for aggregates to reinforce "this contains more".
+    if (p.aggregate) {
+      ctx.beginPath()
+      ctx.lineWidth = 1.4
+      ctx.strokeStyle = `rgba(255,255,255,0.45)`
+      ctx.arc(p.x, p.y, R + 4.5, 0, Math.PI * 2)
+      ctx.stroke()
+    }
   }
 
-  /** Rank visible particles near the cursor and return the best candidate. */
   pick(px: number, py: number, radius = 26): PickResult | null {
     let best: PickResult | null = null
     let bestScore = -Infinity
@@ -349,10 +394,11 @@ export class ParticleField {
       if (d2 > r2) continue
       const dist = Math.sqrt(d2)
       const proximity = 1 - dist / radius
-      const score = selectionScore(p.ev, proximity)
+      // Bias selection toward containers so they're easy to grab and drill.
+      const score = selectionScore(p.ev, proximity) + (p.aggregate ? 0.12 : 0)
       if (score > bestScore) {
         bestScore = score
-        best = { id: p.ev.id, x: p.x, y: p.y, dist }
+        best = { id: p.ev.id, x: p.x, y: p.y, dist, isAggregate: p.aggregate }
       }
     }
     return best

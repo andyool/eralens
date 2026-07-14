@@ -20,18 +20,22 @@ import { dirname, join } from 'node:path'
 
 const ENDPOINT = 'https://query.wikidata.org/sparql'
 const USER_AGENT = 'EraLens/0.1 (https://github.com/; historical timeline clone) node-fetch'
-const LIMIT = Number(process.env.ERALENS_LIMIT ?? 4000)
-const MIN_SITELINKS = Number(process.env.ERALENS_MIN_SITELINKS ?? 12)
+const LIMIT = Number(process.env.ERALENS_LIMIT ?? 6000)
+const MIN_SITELINKS = Number(process.env.ERALENS_MIN_SITELINKS ?? 10)
 
+// P585 = point in time, P31 = instance of, P18 = image, P625 = coordinates,
+// P361 = "part of" (battle → war → conflict) which gives us the hierarchy.
 const QUERY = `
 SELECT ?item ?itemLabel ?date ?image ?coord ?links ?enTitle
-       (GROUP_CONCAT(DISTINCT ?typeLabel; separator="|") AS ?types) WHERE {
+       (GROUP_CONCAT(DISTINCT ?typeLabel; separator="|") AS ?types)
+       (GROUP_CONCAT(DISTINCT ?partOf; separator="|") AS ?parents) WHERE {
   ?item wdt:P585 ?date .
   ?item wikibase:sitelinks ?links .
   FILTER(?links >= ${MIN_SITELINKS})
   ?item wdt:P31 ?type .
   OPTIONAL { ?item wdt:P18 ?image . }
   OPTIONAL { ?item wdt:P625 ?coord . }
+  OPTIONAL { ?item wdt:P361 ?partOf . }
   OPTIONAL {
     ?article schema:about ?item ;
              schema:isPartOf <https://en.wikipedia.org/> ;
@@ -107,7 +111,7 @@ async function main() {
   }
 
   const seen = new Set()
-  const events = []
+  const raw = []
   for (const row of json.results.bindings) {
     const qid = row.item.value.split('/').pop()
     if (seen.has(qid)) continue
@@ -122,23 +126,46 @@ async function main() {
       const cm = /Point\(([-0-9.]+) ([-0-9.]+)\)/.exec(row.coord.value)
       if (cm) coordinates = [Number(cm[1]), Number(cm[2])]
     }
-    events.push({
-      id: `wd_${qid}`,
-      title,
-      year: date.year,
-      month: date.month,
-      day: date.day,
-      precision: date.precision,
-      type: 'event',
-      categories: typesToCategories(row.types?.value ?? ''),
-      significance: significanceFromLinks(links),
-      confidence: Math.min(1, 0.5 + links / 200),
-      description: '',
-      coordinates,
-      wikiTitle: row.enTitle?.value ? row.enTitle.value.replace(/ /g, '_') : undefined,
-      wikidataId: qid,
+    const parentQids = (row.parents?.value ?? '')
+      .split('|')
+      .map((u) => u.split('/').pop())
+      .filter(Boolean)
+    raw.push({
+      qid,
+      parentQids,
+      event: {
+        id: `wd_${qid}`,
+        title,
+        year: date.year,
+        month: date.month,
+        day: date.day,
+        precision: date.precision,
+        type: 'event',
+        categories: typesToCategories(row.types?.value ?? ''),
+        significance: significanceFromLinks(links),
+        confidence: Math.min(1, 0.5 + links / 200),
+        description: '',
+        coordinates,
+        wikiTitle: row.enTitle?.value ? row.enTitle.value.replace(/ /g, '_') : undefined,
+        wikidataId: qid,
+      },
     })
   }
+
+  // Wire up the containment hierarchy: link an event to a "part of" parent only
+  // when that parent is also in the dataset (so the tree stays consistent).
+  const inSet = new Set(raw.map((r) => r.qid))
+  let linked = 0
+  const events = raw.map((r) => {
+    const parent = r.parentQids.find((p) => inSet.has(p) && p !== r.qid)
+    if (parent) {
+      r.event.parentId = `wd_${parent}`
+      r.event.tier = 'event'
+      linked++
+    }
+    return r.event
+  })
+  console.log(`Linked ${linked} events into "part of" containers.`)
 
   events.sort((a, b) => a.year - b.year)
   const outDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'public')

@@ -18,6 +18,18 @@ This repository is **Stage 1** — the minimum viable product. See
   vertical stacking reveals how densely each period is documented (the
   "waveform" silhouette). Rendered on HTML5 Canvas for smooth animation of
   thousands of points.
+- **Nested drill-down (semantic zoom)** — history is a containment hierarchy:
+  *moments ⊂ a battle ⊂ a war ⊂ an era*. Zoomed out, a whole war is a single
+  bright "aggregate" dot; zoom in (or click it) and it **steps down** into its
+  battles, then into the moments inside a battle — e.g. **Hundred Years' War →
+  Battle of Agincourt → the eight phases of the fighting**. A breadcrumb shows
+  where you are and lets you climb back out. WWII → D-Day → the landings, and the
+  Apollo programme → Apollo 11 → the mission's moments are built in too.
+- **Illustrative detail (toggle)** — an optional layer adds thousands of clearly
+  **badged placeholder** sub-moments so the dense particle cloud and the
+  drill-down are there offline with zero setup. Placeholders never assert an
+  invented fact; real depth comes from the Wikidata pipeline. Toggle it off to
+  see only sourced events.
 - **Adaptive (exponential) timeline** — a custom warp function is *linear for
   recent millennia* and *logarithmic for deep time*, joined smoothly, so the
   navigator's sensitivity changes automatically with the era on screen. One
@@ -80,9 +92,12 @@ ERALENS_LIMIT=6000 ERALENS_MIN_SITELINKS=8 npm run fetch:wikidata
 ```
 
 It queries the Wikidata SPARQL endpoint for occurrences with a *point in time*,
-ranks them by sitelink count (a significance proxy) and maps their types onto
-EraLens categories. It needs outbound network access to `query.wikidata.org`.
-Restart the dev server afterwards and the larger dataset loads automatically.
+ranks them by sitelink count (a significance proxy), maps their types onto
+EraLens categories, and wires up the containment hierarchy from the **"part of"
+(P361)** property so battles nest under their wars. It needs outbound network
+access to `query.wikidata.org`. Restart the dev server afterwards and the larger
+dataset loads automatically — the same drill-down UI then works on real data at
+scale.
 
 Every event record follows the schema in `src/lib/types.ts`, including uncertain
 dates (`day` / `month` / `year` / `circa` / `century` / `geological`), coordinates
@@ -93,8 +108,10 @@ dates (`day` / `month` / `year` / `circa` / `century` / `geological`), coordinat
 ```
 src/
   lib/
-    timeMapping.ts    Adaptive warp (year ⇄ pixel), zoom/pan, tick generation
-    particleField.ts  Canvas engine: layout (density waveform), animation, hit-testing
+    timeMapping.ts    Adaptive warp (year ⇄ pixel), zoom/pan, drill-to-span, ticks
+    hierarchy.ts      Containment forest, decimalYear, level-of-detail selection
+    particleField.ts  Canvas engine: LOD layout, aggregation, animation, hit-testing
+    illustrative.ts   Optional badged placeholder sub-moments (density + drill-down)
     significance.ts   Selection-score formula + dot sizing
     search.ts         In-memory search index (prefix + fuzzy)
     related.ts        Labelled related-event relationships
@@ -129,6 +146,21 @@ warp(bp) = bp                                if bp ≤ 3000 years   (linear zone
 Both the main view and the bottom navigator are linear interpolations in this
 warped space, which is what makes a small drag advance a year near the present
 but tens of millions of years in deep time — using the same handle.
+
+### How the nested drill-down works
+
+Events form a containment forest via `parentId` (a battle's parent is its war).
+`buildForest` precomputes each node's subtree time-span and descendant count.
+On every view change the field runs **level-of-detail selection**: walking the
+forest top-down, a container whose on-screen span is wider than a threshold is
+"opened" into its children; otherwise it collapses to a single aggregate dot
+(sized by how much it contains). So the same field shows a war as one dot when
+zoomed out and its individual moments when zoomed in — and clicking an aggregate
+zooms to its span. Sub-day moments carry a fractional-day position so the phases
+of a single battle spread out once you zoom to that day.
+
+The optional Wikidata dataset gets real hierarchy from the **"part of" (P361)**
+property, so battles nest under their wars automatically.
 
 ## Accessibility
 

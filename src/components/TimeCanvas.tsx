@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { HistEvent, TimeView } from '../lib/types'
 import { ParticleField } from '../lib/particleField'
+import type { Forest } from '../lib/hierarchy'
 import { panView, zoomView } from '../lib/timeMapping'
 import { compactDate } from '../lib/dateFormat'
 import { categoryColor } from '../data/categories'
@@ -8,22 +9,26 @@ import { fetchWikiSummary } from '../lib/wiki'
 
 interface Props {
   events: HistEvent[]
+  forest: Forest
   view: TimeView
   onViewChange: (v: TimeView) => void
   predicate: (ev: HistEvent) => boolean
   selectedId: string | null
   onSelect: (id: string | null) => void
+  onDrill: (id: string) => void
   reducedMotion: boolean
   showHint: boolean
 }
 
 export default function TimeCanvas({
   events,
+  forest,
   view,
   onViewChange,
   predicate,
   selectedId,
   onSelect,
+  onDrill,
   reducedMotion,
   showHint,
 }: Props) {
@@ -34,23 +39,22 @@ export default function TimeCanvas({
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [chip, setChip] = useState<{ x: number; y: number } | null>(null)
 
-  const byId = useMemo(() => new Map(events.map((e) => [e.id, e])), [events])
   const visibleSorted = useMemo(
     () =>
       events
-        .filter((e) => e.year >= view.startYear && e.year <= view.endYear && predicate(e))
+        .filter((e) => !e.illustrative && e.year >= view.startYear && e.year <= view.endYear && predicate(e))
         .sort((a, b) => a.year - b.year),
     [events, view, predicate],
   )
 
   const emphasisId = hoverId ?? selectedId
-  const hoverEvent = hoverId ? byId.get(hoverId) : null
+  const hoverNode = hoverId ? forest.map.get(hoverId) : null
+  const hoverEvent = hoverNode?.ev ?? null
 
   // ── Field lifecycle ──────────────────────────────────────────────────
   useEffect(() => {
     if (!canvasRef.current) return
     const field = new ParticleField(canvasRef.current, () => {
-      // Keep the hover chip glued to the (animating) particle.
       const id = hoverIdRef.current
       if (id) {
         const pos = field.screenPosOf(id)
@@ -59,7 +63,7 @@ export default function TimeCanvas({
     })
     fieldRef.current = field
     field.setReducedMotion(reducedMotion)
-    field.setEvents(events)
+    field.setForest(forestRef.current)
     field.setFilter(predicate)
     field.setView(view)
     field.start()
@@ -74,9 +78,11 @@ export default function TimeCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const forestRef = useRef(forest)
+  forestRef.current = forest
   useEffect(() => {
-    fieldRef.current?.setEvents(events)
-  }, [events])
+    fieldRef.current?.setForest(forest)
+  }, [forest])
   useEffect(() => {
     fieldRef.current?.setView(view)
   }, [view])
@@ -87,7 +93,6 @@ export default function TimeCanvas({
     fieldRef.current?.setReducedMotion(reducedMotion)
   }, [reducedMotion])
 
-  // Emphasis + lazy image for the highlighted particle.
   const hoverIdRef = useRef<string | null>(null)
   hoverIdRef.current = hoverId
   useEffect(() => {
@@ -98,23 +103,24 @@ export default function TimeCanvas({
       return
     }
     field.setEmphasis(emphasisId)
-    const ev = byId.get(emphasisId)
-    if (!ev?.wikiTitle) return
+    const ev = forest.map.get(emphasisId)?.ev
+    if (!ev?.wikiTitle || ev.illustrative) return
     let cancelled = false
     fetchWikiSummary(ev).then((s) => {
       if (cancelled || !s?.thumbnail) return
       const img = new Image()
       img.crossOrigin = 'anonymous'
       img.onload = () => {
-        if (!cancelled && hoverIdRef.current === emphasisId) field.setEmphasis(emphasisId, img)
-        else if (!cancelled && selectedId === emphasisId) field.setEmphasis(emphasisId, img)
+        if (!cancelled && (hoverIdRef.current === emphasisId || selectedId === emphasisId)) {
+          field.setEmphasis(emphasisId, img)
+        }
       }
       img.src = s.thumbnail
     })
     return () => {
       cancelled = true
     }
-  }, [emphasisId, byId, selectedId])
+  }, [emphasisId, forest, selectedId])
 
   // ── Pointer interaction ──────────────────────────────────────────────
   const pointers = useRef(new Map<number, { x: number; y: number }>())
@@ -135,23 +141,20 @@ export default function TimeCanvas({
     return { x: e.clientX - rect.left, y: e.clientY - rect.top, width: rect.width }
   }
 
-  const updateHover = useCallback(
-    (x: number, y: number, radius: number) => {
-      const field = fieldRef.current
-      if (!field) return
-      const best = field.pick(x, y, radius)
-      const now = performance.now()
-      const nextId = best?.id ?? null
-      if (nextId !== hoverIdRef.current) {
-        const grace = nextId ? 55 : 110
-        if (now - lastSwitch.current < grace) return
-        lastSwitch.current = now
-        setHoverId(nextId)
-      }
-      if (best) setChip({ x: best.x, y: best.y })
-    },
-    [],
-  )
+  const updateHover = useCallback((x: number, y: number, radius: number) => {
+    const field = fieldRef.current
+    if (!field) return
+    const best = field.pick(x, y, radius)
+    const now = performance.now()
+    const nextId = best?.id ?? null
+    if (nextId !== hoverIdRef.current) {
+      const grace = nextId ? 55 : 110
+      if (now - lastSwitch.current < grace) return
+      lastSwitch.current = now
+      setHoverId(nextId)
+    }
+    if (best) setChip({ x: best.x, y: best.y })
+  }, [])
 
   const onPointerDown = (e: React.PointerEvent) => {
     const { x, y } = localXY(e)
@@ -194,7 +197,6 @@ export default function TimeCanvas({
       pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
     }
 
-    // Pinch-zoom with two pointers.
     if (pointers.current.size === 2 && drag.current) {
       const pts = [...pointers.current.values()]
       const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
@@ -205,7 +207,6 @@ export default function TimeCanvas({
       return
     }
 
-    // Drag to pan.
     if (drag.current?.active && e.pressure > 0) {
       const dx = x - drag.current.startX
       const dy = y - drag.current.startY
@@ -218,7 +219,6 @@ export default function TimeCanvas({
       }
     }
 
-    // Hover discovery (mouse / pen only).
     if (e.pointerType !== 'touch' && (!drag.current || !drag.current.moved)) {
       updateHover(x, y, 26)
     }
@@ -229,15 +229,20 @@ export default function TimeCanvas({
     pointers.current.delete(e.pointerId)
     if (pointers.current.size === 0) {
       if (wasDrag && wasDrag.active && !wasDrag.moved) {
-        // A tap / click — select the ranked event under the pointer.
         const { x, y } = localXY(e)
         const radius = e.pointerType === 'touch' ? 34 : 24
         const best = fieldRef.current?.pick(x, y, radius)
-        onSelect(best?.id ?? null)
-        if (e.pointerType === 'touch') {
-          setHoverId(best?.id ?? null)
-          if (best) setChip({ x: best.x, y: best.y })
-          else setChip(null)
+        if (best?.isAggregate) {
+          onDrill(best.id)
+          setHoverId(null)
+          setChip(null)
+        } else {
+          onSelect(best?.id ?? null)
+          if (e.pointerType === 'touch') {
+            setHoverId(best?.id ?? null)
+            if (best) setChip({ x: best.x, y: best.y })
+            else setChip(null)
+          }
         }
       }
       drag.current = null
@@ -258,7 +263,6 @@ export default function TimeCanvas({
     }
   }
 
-  // Keyboard navigation across visible events.
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
       e.preventDefault()
@@ -305,20 +309,23 @@ export default function TimeCanvas({
           }}
           aria-hidden
         >
-          <div className="hc-title">{hoverEvent.title}</div>
+          <div className="hc-title">
+            {hoverEvent.title}
+            {hoverEvent.illustrative && <span className="hc-badge">illustrative</span>}
+          </div>
           <div className="hc-meta">
-            <span
-              className="hc-dot"
-              style={{ background: categoryColor(hoverEvent.categories[0]) }}
-            />
+            <span className="hc-dot" style={{ background: categoryColor(hoverEvent.categories[0]) }} />
             {compactDate(hoverEvent)}
+            {hoverNode && hoverNode.children.length > 0 && (
+              <span className="hc-contains">· contains {hoverNode.descendantCount} · click to open</span>
+            )}
           </div>
         </div>
       )}
 
       {showHint && (
         <div className="canvas-hint">
-          Move across the field to discover events · drag to pan · scroll to zoom
+          Move across the field to discover events · click a ringed dot to zoom in · drag to pan
         </div>
       )}
 
