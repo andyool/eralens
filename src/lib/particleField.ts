@@ -89,6 +89,8 @@ export class ParticleField {
   private relCauses: Set<string> = new Set()
   private relEffects: Set<string> = new Set()
   private pulse = 0
+  /** Current density scale (1 = waveform, >1 = bubble mode). */
+  private scale = 1
 
   private reducedMotion = false
   private rafId: number | null = null
@@ -202,6 +204,7 @@ export class ParticleField {
     }
 
     const laid: Particle[] = []
+    let sumArea = 0
     for (const node of visibleNodes) {
       if (!this.predicate(node)) continue
       const p = this.particles.get(node.ev.id)
@@ -209,16 +212,34 @@ export class ParticleField {
       p.visible = true
       p.tx = xOf(decimalYear(node.ev))
       p.tr = p.aggregate ? aggregateRadius(node) : baseRadius(node.ev) * (p.illustrative ? 0.82 : 1)
+      sumArea += Math.PI * p.tr * p.tr
       laid.push(p)
     }
 
-    // 3. Vertical "waveform" stacking by x-column. Columns denser than the
-    //    available height keep only their most significant events — the wave
-    //    saturates instead of overflowing the canvas.
+    // 3. Gapminder-style density scaling: when few dots are on screen they
+    //    grow into bubbles that genuinely occupy the canvas (aiming for a
+    //    fixed fraction of its area); when tens of thousands are visible the
+    //    scale collapses to 1 and the field reads as a fine waveform again.
+    const fillTarget = 0.16
+    const rawScale = sumArea > 0 ? Math.sqrt((width * height * fillTarget) / sumArea) : 1
+    const scale = Math.max(1, Math.min(8, rawScale))
+    this.scale = scale
+    if (scale > 1) {
+      for (const p of laid) {
+        p.tr = Math.min(p.tr * scale, p.aggregate ? 30 : 16)
+      }
+    }
+
+    // 4. Vertical "waveform" stacking by x-column. Column width and dot
+    //    spacing follow the bubble scale so neighbours sit shoulder to
+    //    shoulder instead of piling on the centre line. Columns denser than
+    //    the available height keep only their most significant events — the
+    //    wave saturates instead of overflowing the canvas.
+    const bucketPx = BUCKET_PX * scale
     const colMax = Math.max(24, Math.min(240, Math.floor((maxHalf * 2) / MIN_SPACING)))
     const buckets = new Map<number, Particle[]>()
     for (const p of laid) {
-      const b = Math.round(p.tx / BUCKET_PX)
+      const b = Math.round(p.tx / bucketPx)
       const list = buckets.get(b) ?? []
       list.push(p)
       buckets.set(b, list)
@@ -228,7 +249,11 @@ export class ParticleField {
       // Aggregates + significant events sit nearest the centre line.
       list.sort((a, b) => Number(b.aggregate) - Number(a.aggregate) || b.ev.significance - a.ev.significance)
       const count = Math.min(list.length, colMax)
-      const spacing = Math.min(BASE_SPACING, Math.max(MIN_SPACING, maxHalf / (count / 2 + 0.6)))
+      let meanR = 0
+      for (let i = 0; i < count; i++) meanR += list[i].tr
+      meanR = count > 0 ? meanR / count : 0
+      const wantSpacing = Math.max(BASE_SPACING, meanR * 2.05 + 2)
+      const spacing = Math.min(wantSpacing, Math.max(MIN_SPACING, maxHalf / (count / 2 + 0.6)))
       for (let i = 0; i < list.length; i++) {
         const p = list[i]
         if (i >= colMax) {
@@ -238,7 +263,7 @@ export class ParticleField {
         }
         const step = Math.ceil(i / 2)
         const sign = i % 2 === 0 ? -1 : 1
-        const jitterY = (hashId(p.ev.id + 'y') - 0.5) * spacing * 0.5
+        const jitterY = (hashId(p.ev.id + 'y') - 0.5) * spacing * 0.35
         p.ty = centerY + sign * step * spacing + jitterY
         p.tAlpha = 1
         this.laid.push(p)
@@ -363,9 +388,16 @@ export class ParticleField {
       }
     }
 
+    const bubbleMode = this.scale >= 1.5
     for (const g of groups.values()) {
       ctx.fillStyle = g.style
       ctx.fill(g.path)
+      if (bubbleMode) {
+        // A dark rim keeps overlapping bubbles legible, Gapminder-style.
+        ctx.lineWidth = 1
+        ctx.strokeStyle = 'rgba(5,8,14,0.55)'
+        ctx.stroke(g.path)
+      }
     }
 
     if (aggregates) {
@@ -388,7 +420,46 @@ export class ParticleField {
     const em = focus ? this.particles.get(focus) : null
     if (em && related.length > 0) this.drawCausalLinks(em, related)
     for (const p of related) this.drawRelated(p)
+    if (this.scale >= 1.4) this.drawBubbleLabels(dimMult)
     if (em && em.alpha > 0.02) this.drawEmphasis(em)
+  }
+
+  /** Label the largest bubbles, greedily skipping ones that would collide. */
+  private drawBubbleLabels(dimMult: number) {
+    const { ctx } = this
+    const focus = this.emphasisId
+    const candidates = this.laid
+      .filter(
+        (p) =>
+          p.alpha > 0.5 &&
+          p.r >= 7 &&
+          p.ev.id !== focus &&
+          !(focus && dimMult < 0.5 && !(this.relCauses.has(p.ev.id) || this.relEffects.has(p.ev.id))),
+      )
+      .sort((a, b) => b.r - a.r)
+      .slice(0, 18)
+    if (candidates.length === 0) return
+
+    ctx.save()
+    ctx.font = '600 11px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'bottom'
+    ctx.shadowColor = 'rgba(0,0,0,0.85)'
+    ctx.shadowBlur = 4
+    const placed: { x0: number; x1: number; y: number }[] = []
+    for (const p of candidates) {
+      let title = p.ev.title
+      if (title.length > 26) title = `${title.slice(0, 25)}…`
+      const w = ctx.measureText(title).width
+      const y = p.y - p.r - 4
+      const x0 = p.x - w / 2
+      const x1 = p.x + w / 2
+      if (placed.some((q) => x0 < q.x1 && x1 > q.x0 && Math.abs(y - q.y) < 14)) continue
+      placed.push({ x0, x1, y })
+      ctx.fillStyle = 'rgba(255,255,255,0.85)'
+      ctx.fillText(title, p.x, y)
+    }
+    ctx.restore()
   }
 
   /** Curved connectors from the focused event to its causes and effects. */
@@ -428,7 +499,8 @@ export class ParticleField {
     const { ctx } = this
     const [r, g, b] = p.colorRgb
     const pulseR = 1 + Math.sin(this.pulse * 3) * 0.06
-    const R = Math.max(9, p.tr * 3.2) * pulseR
+    // Grow small dots into a readable focal point; big bubbles only a little.
+    const R = Math.min(Math.max(9, p.tr * 1.7 + 6), 42) * pulseR
 
     const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, R * 2.4)
     grad.addColorStop(0, `rgba(${r},${g},${b},0.28)`)
