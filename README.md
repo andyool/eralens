@@ -25,11 +25,16 @@ This repository is **Stage 1** — the minimum viable product. See
   Battle of Agincourt → the eight phases of the fighting**. A breadcrumb shows
   where you are and lets you climb back out. WWII → D-Day → the landings, and the
   Apollo programme → Apollo 11 → the mission's moments are built in too.
-- **Illustrative detail (toggle)** — an optional layer adds thousands of clearly
-  **badged placeholder** sub-moments so the dense particle cloud and the
-  drill-down are there offline with zero setup. Placeholders never assert an
-  invented fact; real depth comes from the Wikidata pipeline. Toggle it off to
-  see only sourced events.
+- **Auto-clustering** — every event is nested into honest **time-bucket
+  containers** (millennium → century → decade → event → moment), with
+  single-child buckets pruned away. Any dataset — including a large Wikidata
+  fetch — steps down cleanly instead of showing a flat wall of dots, and filters
+  see *through* containers (a war stays visible when its battles match).
+- **Map view** — an offline, self-contained world map that plots located events
+  by coordinate, reacting live to the time range and category filters. Hover for
+  a place, click to open the card.
+- **Comparison mode** — put two subjects in two lanes on the same time axis
+  (e.g. *Wars* above, *Technology* below) to see how they rise and fall together.
 - **Adaptive (exponential) timeline** — a custom warp function is *linear for
   recent millennia* and *logarithmic for deep time*, joined smoothly, so the
   navigator's sensitivity changes automatically with the era on screen. One
@@ -109,9 +114,8 @@ dates (`day` / `month` / `year` / `circa` / `century` / `geological`), coordinat
 src/
   lib/
     timeMapping.ts    Adaptive warp (year ⇄ pixel), zoom/pan, drill-to-span, ticks
-    hierarchy.ts      Containment forest, decimalYear, level-of-detail selection
+    hierarchy.ts      Containment forest, decimalYear, time-bucket clustering, LOD
     particleField.ts  Canvas engine: LOD layout, aggregation, animation, hit-testing
-    illustrative.ts   Optional badged placeholder sub-moments (density + drill-down)
     significance.ts   Selection-score formula + dot sizing
     search.ts         In-memory search index (prefix + fuzzy)
     related.ts        Labelled related-event relationships
@@ -171,12 +175,14 @@ property, so battles nest under their wars automatically.
   event dialog; a live region announces the focused event.
 - Sound is **off by default** and clearly toggleable; nothing autoplays.
 
-## Roadmap (Stage 2)
+## Roadmap
 
-Saved events & collections · comparison mode (e.g. *Rome vs Han China*) · map
-view (coordinates already in the schema) · curated editorial stories & teacher
-timelines · multilingual sources · multi-signal significance controls · citation
-& source-quality indicators · accounts · sharing & embeds.
+Done in Stage 2 so far: nested drill-down, auto-clustering, real moment-trees,
+the map view and comparison mode. Still ahead: saved events & collections ·
+curated editorial stories & teacher timelines · multilingual sources ·
+multi-signal significance controls · citation & source-quality indicators ·
+recursive real sub-events pulled from Wikidata at scale · accounts · sharing &
+embeds.
 
 ## Attribution
 

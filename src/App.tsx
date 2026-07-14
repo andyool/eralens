@@ -17,6 +17,16 @@ import TimeCanvas from './components/TimeCanvas'
 import Navigator from './components/Navigator'
 import EventCard from './components/EventCard'
 import ListView from './components/ListView'
+import MapView from './components/MapView'
+import ComparisonView from './components/ComparisonView'
+
+type ViewMode = 'timeline' | 'list' | 'map' | 'compare'
+const MODES: { id: ViewMode; icon: string; label: string }[] = [
+  { id: 'timeline', icon: '✦', label: 'Timeline' },
+  { id: 'list', icon: '☰', label: 'List' },
+  { id: 'map', icon: '🌍', label: 'Map' },
+  { id: 'compare', icon: '⚖', label: 'Compare' },
+]
 
 const FULL_VIEW: TimeView = { startYear: MIN_YEAR, endYear: MAX_YEAR }
 
@@ -27,7 +37,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [activeEraId, setActiveEraId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [listView, setListView] = useState(false)
+  const [mode, setMode] = useState<ViewMode>('timeline')
   const [soundOn, setSoundOn] = useState(false)
   const [toast, setToast] = useState<{ title: string; desc: string; color: string } | null>(null)
   const [hintDone, setHintDone] = useState(false)
@@ -231,17 +241,22 @@ export default function App() {
 
         <div className="header-actions">
           <Discover onPick={lucky} />
-          <button
-            className={`icon-btn ${listView ? 'active' : ''}`}
-            aria-pressed={listView}
-            onClick={() => setListView((v) => !v)}
-            title="Toggle list view"
-          >
-            <span className="glyph" aria-hidden>
-              {listView ? '🗺️' : '📋'}
-            </span>
-            <span className="hide-sm">{listView ? 'Timeline' : 'List'}</span>
-          </button>
+          <div className="mode-switch" role="group" aria-label="View mode">
+            {MODES.map((m) => (
+              <button
+                key={m.id}
+                className={`mode-btn ${mode === m.id ? 'active' : ''}`}
+                aria-pressed={mode === m.id}
+                onClick={() => setMode(m.id)}
+                title={m.label}
+              >
+                <span className="glyph" aria-hidden>
+                  {m.icon}
+                </span>
+                <span className="hide-sm">{m.label}</span>
+              </button>
+            ))}
+          </div>
           <button
             className={`icon-btn ${soundOn ? 'active' : ''}`}
             aria-pressed={soundOn}
@@ -268,11 +283,29 @@ export default function App() {
         {isMobile && sidebarOpen && <div className="scrim" onClick={() => setSidebarOpen(false)} />}
 
         <div className="canvas-col">
-          {listView ? (
+          {mode === 'list' && (
             <div className="canvas-wrap">
               <ListView events={visibleSorted} onSelect={(id) => select(id, false)} />
             </div>
-          ) : (
+          )}
+          {mode === 'map' && (
+            <MapView
+              events={events}
+              view={view}
+              eventMatches={eventMatches}
+              selectedId={selectedId}
+              onSelect={(id) => select(id, false)}
+            />
+          )}
+          {mode === 'compare' && (
+            <ComparisonView
+              events={events}
+              view={view}
+              selectedId={selectedId}
+              onSelect={(id) => select(id, false)}
+            />
+          )}
+          {mode === 'timeline' && (
             <TimeCanvas
               events={events}
               forest={forest}
@@ -288,9 +321,9 @@ export default function App() {
             />
           )}
 
-          {!listView && <EraRail activeEraId={activeEraId} onSelect={selectEra} />}
+          {mode === 'timeline' && <EraRail activeEraId={activeEraId} onSelect={selectEra} />}
 
-          {!listView && (
+          {mode === 'timeline' && (
             <Breadcrumb
               focus={focusNode}
               onHome={() => setView(FULL_VIEW)}
