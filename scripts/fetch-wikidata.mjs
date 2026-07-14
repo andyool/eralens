@@ -35,29 +35,51 @@ const CATEGORY_ORDER = [
   'sports',
 ]
 
+// Matched against the event's "instance of" type labels. Word boundaries
+// matter: a bare /war/ used to put every aWARd ceremony in Wars & Conflict.
 const CATEGORY_RULES = [
-  [/(sport|season|tournament|championship|olympi|world cup|grand prix|race|football|cricket|tennis|golf|athletics|marathon|regatta)/i, ['sports']],
-  [/(war|battle|siege|conflict|invasion|revolt|revolution|campaign|offensive|massacre|mutiny|insurgency)/i, ['wars']],
-  [/(treaty|election|referendum|coup|empire|state|monarch|president|politic|independence|summit|legislation)/i, ['politics']],
-  [/(disease|pandemic|epidemic|earthquake|eruption|flood|famine|disaster|hurricane|cyclone|tsunami|wildfire|accident|crash|shipwreck|derailment)/i, ['disasters']],
-  [/(discovery|scientific|experiment|theory|observation|eclipse|comet|conjunction)/i, ['science']],
-  [/(invention|technolog|spaceflight|space mission|satellite|launch|rocket)/i, ['technology']],
-  [/(painting|sculpture|artwork|exhibition|art )/i, ['art']],
-  [/(novel|book|poem|literature|publication)/i, ['literature']],
-  [/(symphony|opera|album|song|music|concert|festival)/i, ['music']],
-  [/(religio|council|church|papal|caliph|synod|pilgrimage)/i, ['religion']],
-  [/(expedition|voyage|exploration|circumnavigation|ascent)/i, ['exploration']],
-  [/(building|monument|bridge|cathedral|construction|tower|canal|railway)/i, ['construction']],
-  [/(trade|economic|financial|market|company|merger|bankruptcy|strike)/i, ['economics']],
-  [/(protest|suffrage|rights|abolition|emancipation|demonstration|riot)/i, ['rights']],
+  [/sport(s|ing)?\b|\bseason\b|tournament|championship|olympi|world cup|grand prix|\brace\b|racing|\brally\b|football|soccer|cricket|tennis|golf|athletics|marathon|regatta|cycling|boxing|wrestling|motorsport|\bchess\b|basketball|baseball|hockey|rugby|swimming|skiing|skating|snooker|darts|volleyball|badminton|gymnastics|triathlon|rowing|biathlon|fencing|judo|weightlifting|archery|super bowl|uefa|fifa|\bcup\b|\bleague\b|olympiad|aquatics|giro d|tour de france|vuelta|speedway|motocross|\bderby\b|\bmatch\b|qualification event|playoffs?\b|all-star|\bdraft\b|tour of|san remo|roubaix|flanders|liège|lombardia|medal table|\bgames\b|\bfinals\b|\bnba\b|\bnhl\b|\bnfl\b|\bmlb\b/i, ['sports']],
+  [/\bwars?\b|\bbattles?\b|\bsieges?\b|(?<!trade )(?<!diplomatic )\bconflict\b|invasion|revolt|rebellion|uprising|revolution|military (campaign|operation|expedition|offensive)|\boffensive\b|massacre|\bmutiny\b|insurgency|airstrike|\braid\b|ambush|skirmish|crusade|bombardment|blockade|pogrom|genocide|terror|\bcoup\b|assassination|bomb attack|\battack\b|shooting|hostage|kidnapping|hijacking|murder\b|robbery|bombing|\bassault\b|storming/i, ['wars']],
+  [/treaty|\belection\b|referendum|empire|\bstate\b|monarch|president|politic|independence|\bsummit\b|legislation|parliament|congress|dynasty|kingdom|republic|annexation|secession|constitution|impeachment|inauguration|abdication|proclamation|partition|armistice|peace conference|coronation|\bconvention\b|clandestine|espionage|agreement\b|\bpact\b|accord\b|charter\b|protocol\b|accession|enlargement|statute\b|\bact\b|\bdecree\b|\bedict\b/i, ['politics']],
+  [/disease|pandemic|epidemic|earthquake|eruption|\bflood\b|famine|disaster|hurricane|cyclone|typhoon|tsunami|wildfire|\bfires?\b|accident|\bcrash\b|shipwreck|derailment|collision|explosion|landslide|avalanche|drought|blizzard|tornado|\bstorms?\b|sinking|stampede|oil spill|\bwreck\b|conflagration/i, ['disasters']],
+  [/discover|scientific|experiment|\btheory\b|observation|\beclipse\b|\bcomet\b|astronomical|supernova|clinical trial|vaccin|expedition.{0,12}research/i, ['science']],
+  [/invention|technolog|spaceflight|space (mission|station|probe)|satellite|\blaunch\b|rocket|maiden flight|first flight|nuclear (weapons )?test|computer|software|internet|patent|algorithm/i, ['technology']],
+  [/painting|sculpture|artwork|exhibition|\bart\b|\bfilms?\b|cinema|\bmovie\b|theatre|theater|premiere|biennale|ballet|photography/i, ['art']],
+  [/\bnovel\b|\bbooks?\b|\bpoem\b|literature|literary|comics?\b/i, ['literature']],
+  [/symphony|\bopera\b|\balbum\b|\bsongs?\b|music|concert|eurovision|choral|orchestra/i, ['music']],
+  [/religio|ecumenical|\bsynod\b|papal|conclave|caliph|pilgrimage|\bchurch\b|\bmosque\b|\btemple\b|canoniz|beatific|\bhajj\b/i, ['religion']],
+  [/expedition|voyage|exploration|circumnavigation|\bascent\b|polar/i, ['exploration']],
+  [/building|monument|\bbridge\b|cathedral|construction|\btower\b|\bcanal\b|railway|tunnel|\bdam\b|skyscraper|\bstadium\b/i, ['construction']],
+  [/\btrade\b|economic|financial|\bmarket\b|company|merger|bankruptcy|\bstrike\b|recession|stock exchange|currency|world's fair|expo\b/i, ['economics']],
+  [/protest|suffrage|rights|abolition|emancipation|demonstration|\briots?\b|boycott|\bmarch\b|sit-in/i, ['rights']],
 ]
 
-function typesToMask(typesStr) {
+const bit = (id) => 1 << CATEGORY_ORDER.indexOf(id)
+
+/**
+ * Categorise from the type labels, with the title as a tie-breaker for award
+ * ceremonies — "award ceremony" alone says nothing about whether the Golden
+ * Globes (film → art) or the Grammys (music) are being handed out.
+ */
+function typesToMask(typesStr, title = '') {
   let mask = 0
   for (const [re, list] of CATEGORY_RULES) {
-    if (re.test(typesStr)) for (const c of list) mask |= 1 << CATEGORY_ORDER.indexOf(c)
+    if (re.test(typesStr)) for (const c of list) mask |= bit(c)
   }
-  if (mask === 0) mask = 1 << CATEGORY_ORDER.indexOf('politics')
+  if (/award|\bprize\b|ceremon|film festival/i.test(typesStr)) {
+    const hay = `${title} ${typesStr}`
+    if (/grammy|\bmusic\b|billboard|\bmtv\b|brit award|juno|eurovision/i.test(hay)) mask |= bit('music')
+    else if (/booker|pulitzer|litera|book fair/i.test(hay)) mask |= bit('literature')
+    else if (/peace|humanitarian/i.test(hay)) mask |= bit('rights')
+    else if (/nobel|science/i.test(hay)) mask |= bit('science')
+    else if (/sport|fifa|laureus|ballon d'or|athlete/i.test(hay)) mask |= bit('sports')
+    else mask |= bit('art') // film/TV/stage awards dominate the remainder
+  }
+  // Cultural catch-alls, only when nothing stronger matched.
+  if (mask === 0 && /festival|\bfair\b|pageant|carnival|parade|exposition/i.test(typesStr)) {
+    mask = bit('art')
+  }
+  if (mask === 0) mask = bit('politics')
   return mask
 }
 
@@ -188,7 +210,7 @@ SELECT ?item ?itemLabel ?date ?coord ?links ?enTitle
       ?item wikibase:sitelinks ?links .
       FILTER(?links >= ${MIN_SITELINKS})
       MINUS {
-        VALUES ?junkType { wd:Q577 wd:Q3186692 wd:Q39911 wd:Q578 wd:Q36507 wd:Q18340514 }
+        VALUES ?junkType { wd:Q577 wd:Q3186692 wd:Q39911 wd:Q578 wd:Q36507 wd:Q18340514 wd:Q47018901 wd:Q13406463 }
         ?item wdt:P31 ?junkType .
       }
     }
@@ -357,6 +379,9 @@ async function main() {
     const title = row.itemLabel?.value ?? qid
     if (/^Q\d+$/.test(title)) continue // skip unlabelled entities
     if (/^\d+s?( BCE?)?$/.test(title)) continue // backstop: calendar years/decades
+    if (/^list of /i.test(title)) continue // navigation pages, not events
+    // Month pages ("April 1973") carry P585 too — they're calendar plumbing.
+    if (/^(January|February|March|April|May|June|July|August|September|October|November|December)( \d{1,4})?$/.test(title)) continue
     seen.add(qid)
 
     const links = Number(row.links.value)
@@ -387,7 +412,7 @@ async function main() {
       day: date.day,
       endYear: end && end.year > date.year ? end.year : 0,
       sig: significanceFromLinks(links),
-      mask: typesToMask(row.types?.value ?? ''),
+      mask: typesToMask(row.types?.value ?? '', title),
       // 1 = derivable from the label, 0 = no article, string = explicit title
       wiki: enTitle == null ? 0 : enTitle === derivedTitle ? 1 : enTitle,
       lon,
@@ -438,7 +463,13 @@ async function main() {
   console.log('Restart the dev server (or rebuild) and EraLens will use them automatically.')
 }
 
-main().catch((err) => {
-  console.error('Failed to fetch from Wikidata:', err)
-  process.exit(1)
-})
+// Exported for the classification audit script; only run the fetch when
+// invoked directly.
+export { typesToMask, CATEGORY_ORDER, runQuery, buildQuery }
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('Failed to fetch from Wikidata:', err)
+    process.exit(1)
+  })
+}
