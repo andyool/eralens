@@ -31,6 +31,22 @@ interface Props {
  * Drag across it to sweep out a range: release, and the view zooms to exactly
  * that span. Scroll to zoom around the cursor. ↩ Back undoes jumps.
  */
+/** "1969", "44 BC", "44 BCE", "AD 79", "-44" → astronomical year. */
+function parseYearInput(s: string): number | null {
+  const m = /^\s*(-?\d+(?:\.\d+)?)\s*(bce?|ce|ad)?\s*$/i.exec(s)
+  if (!m) return null
+  const n = Number(m[1])
+  if (!Number.isFinite(n)) return null
+  return /^bce?$/i.test(m[2] ?? '') ? -Math.abs(n) : n
+}
+
+/** Editable form of a view bound ("500 BCE", "1969"). */
+function yearInputValue(year: number): string {
+  const y = Math.round(year)
+  if (y < -99_999) return String(y) // deep time — leave raw
+  return y < 0 ? `${-y} BCE` : String(y)
+}
+
 export default function Navigator({
   view,
   events,
@@ -43,6 +59,30 @@ export default function Navigator({
   const [trackRef, size] = useResizeObserver<HTMLDivElement>()
   const histRef = useRef<HTMLCanvasElement | null>(null)
   const [brush, setBrush] = useState<{ x0: number; x1: number } | null>(null)
+
+  // The precise year-range picker. Inputs mirror the view unless being edited.
+  const [fromStr, setFromStr] = useState('')
+  const [toStr, setToStr] = useState('')
+  const [rangeInvalid, setRangeInvalid] = useState(false)
+  const editing = useRef(false)
+  useEffect(() => {
+    if (editing.current) return
+    setFromStr(yearInputValue(view.startYear))
+    setToStr(yearInputValue(view.endYear))
+    setRangeInvalid(false)
+  }, [view.startYear, view.endYear])
+
+  const commitRange = useCallback(() => {
+    const a = parseYearInput(fromStr)
+    const b = parseYearInput(toStr)
+    if (a === null || b === null || a >= b) {
+      setRangeInvalid(true)
+      return
+    }
+    setRangeInvalid(false)
+    editing.current = false
+    onSelectRange(clampView({ startYear: a, endYear: b }))
+  }, [fromStr, toStr, onSelectRange])
   const brushing = useRef(false)
 
   const width = size.width || 800
@@ -216,10 +256,57 @@ export default function Navigator({
       </div>
 
       <div className="nav-caption">
-        <span>
-          Showing <span className="range">{formatYear(view.startYear)}</span> →{' '}
-          <span className="range">{formatYear(view.endYear)}</span>
-        </span>
+        <form
+          className={`nav-range ${rangeInvalid ? 'invalid' : ''}`}
+          onSubmit={(e) => {
+            e.preventDefault()
+            commitRange()
+          }}
+          aria-label="Jump to an exact year range"
+        >
+          <span className="nr-label">Years</span>
+          <input
+            className="nr-input"
+            value={fromStr}
+            onChange={(e) => {
+              setFromStr(e.target.value)
+              setRangeInvalid(false)
+            }}
+            onFocus={() => {
+              editing.current = true
+            }}
+            onBlur={() => {
+              editing.current = false
+            }}
+            aria-label="Start year (e.g. 1900 or 44 BCE)"
+            placeholder="1900"
+            size={7}
+          />
+          <span className="nr-arrow">→</span>
+          <input
+            className="nr-input"
+            value={toStr}
+            onChange={(e) => {
+              setToStr(e.target.value)
+              setRangeInvalid(false)
+            }}
+            onFocus={() => {
+              editing.current = true
+            }}
+            onBlur={() => {
+              editing.current = false
+            }}
+            aria-label="End year (e.g. 2000 or 30 BCE)"
+            placeholder="2000"
+            size={7}
+          />
+          <button className="nav-mini-btn nr-go" type="submit">
+            Go
+          </button>
+          <span className="nr-showing hide-sm">
+            {formatYear(view.startYear)} → {formatYear(view.endYear)}
+          </span>
+        </form>
         <span className="zoom-btns">
           <button className="nav-mini-btn" onClick={onBack} disabled={!canBack} title="Back to the previous view">
             ↩ Back

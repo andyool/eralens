@@ -973,6 +973,53 @@ button {
   opacity: 0.35;
   cursor: default;
 }
+
+/* Precise year-range picker */
+.nav-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.nav-range .nr-label {
+  font-size: 10.5px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  font-weight: 650;
+}
+.nav-range .nr-input {
+  width: 84px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(91, 200, 255, 0.35);
+  background: rgba(91, 200, 255, 0.07);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+.nav-range .nr-input:focus {
+  border-color: var(--accent);
+  background: rgba(91, 200, 255, 0.13);
+}
+.nav-range.invalid .nr-input {
+  border-color: var(--danger);
+}
+.nav-range .nr-arrow {
+  color: var(--text-faint);
+}
+.nav-range .nr-go {
+  border-color: rgba(91, 200, 255, 0.5);
+  color: var(--accent);
+}
+.nav-range .nr-showing {
+  margin-left: 8px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
 .brush-label {
   position: absolute;
   top: 4px;

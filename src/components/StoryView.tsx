@@ -141,17 +141,23 @@ export default function StoryView({ event, onClose }: Props) {
               >
                 {parts.map((_, i) => {
                   const above = i % 2 === 0
-                  const cardEdgeY = above ? centerY - 30 : centerY + 30
+                  const sign = above ? -1 : 1
+                  // Orthogonal elbow: out of the dot, along a staggered lane,
+                  // then straight into the card's edge. Same-side dot and card
+                  // orders match, so elbows nest instead of crossing.
+                  const k = Math.floor(i / 2)
+                  const laneY = centerY + sign * (13 + (k % 3) * 6)
+                  const cardEdgeY = centerY + sign * 34
+                  const d = `M ${layout.dotX[i]} ${centerY + sign * 7} V ${laneY} H ${layout.cardX[i]} V ${cardEdgeY}`
                   return (
-                    <line
+                    <path
                       key={i}
-                      x1={layout.dotX[i]}
-                      y1={centerY}
-                      x2={layout.cardX[i]}
-                      y2={cardEdgeY}
+                      d={d}
+                      fill="none"
                       stroke="currentColor"
                       strokeWidth="1.4"
-                      opacity="0.55"
+                      strokeLinejoin="round"
+                      opacity="0.5"
                     />
                   )
                 })}

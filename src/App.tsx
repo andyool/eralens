@@ -370,13 +370,19 @@ export default function App() {
       const turningOn = (activeCivMask & (1 << bit)) === 0
       setActiveCivMask((m) => m ^ (1 << bit))
       if (turningOn) {
-        // Filtering to a civilization also frames its era, so the wave you see
-        // is that civilization's own history.
-        jumpView({ startYear: def.start, endYear: def.end })
-        setToast({ title: def.label, desc: 'Showing only events of this civilisation.', color: '#8b9dff' })
+        // A chosen year range is sacred: filtering to a civilization keeps it
+        // and shows that civilization's events within it. Only from the
+        // everything-view does the chip also frame the civilization's era.
+        const atFullView = view.startYear <= MIN_YEAR + 1 && view.endYear >= MAX_YEAR - 1
+        if (atFullView) {
+          jumpView({ startYear: def.start, endYear: def.end })
+          setToast({ title: def.label, desc: 'Showing only events of this civilisation.', color: '#8b9dff' })
+        } else {
+          setToast({ title: def.label, desc: 'Only this civilisation, within your year range.', color: '#8b9dff' })
+        }
       }
     },
-    [activeCivMask, jumpView],
+    [activeCivMask, jumpView, view],
   )
   const toggleRegion = useCallback((bit: number) => setActiveRegionMask((m) => m ^ (1 << bit)), [])
   const clearAllFilters = useCallback(() => {
