@@ -46,6 +46,14 @@ interface IndexedEvent {
 /** A tiny in-memory search index over titles, people, places and categories. */
 export class SearchIndex {
   private items: IndexedEvent[]
+  /**
+   * Two-character token prefix → item indices. With 100k+ events a keystroke
+   * must not scan every haystack; instead only items sharing a 2-char prefix
+   * with some query token are scored. Fuzzy matching therefore assumes the
+   * first two characters of a token are typed correctly — a fair trade for
+   * making search effectively instant at full-dataset scale.
+   */
+  private byPrefix = new Map<string, number[]>()
 
   constructor(events: HistEvent[]) {
     this.items = events.map((event) => {
@@ -64,15 +72,38 @@ export class SearchIndex {
         tokens: Array.from(new Set(haystack.split(/[^a-z0-9]+/).filter((t) => t.length > 1))),
       }
     })
+    for (let i = 0; i < this.items.length; i++) {
+      const seen = new Set<string>()
+      for (const tok of this.items[i].tokens) {
+        const p = tok.slice(0, 2)
+        if (p.length < 2 || seen.has(p)) continue
+        seen.add(p)
+        let list = this.byPrefix.get(p)
+        if (!list) this.byPrefix.set(p, (list = []))
+        list.push(i)
+      }
+    }
+  }
+
+  /** Indices of items sharing a 2-char prefix with any query token. */
+  private candidates(qTokens: string[]): number[] {
+    const set = new Set<number>()
+    for (const qt of qTokens) {
+      if (qt.length < 2) continue
+      const list = this.byPrefix.get(qt.slice(0, 2))
+      if (list) for (const i of list) set.add(i)
+    }
+    return [...set]
   }
 
   search(query: string, limit = 8): SearchHit[] {
     const q = norm(query)
-    if (!q) return []
+    if (q.length < 2) return []
     const qTokens = q.split(/[^a-z0-9]+/).filter(Boolean)
     const hits: SearchHit[] = []
 
-    for (const item of this.items) {
+    for (const idx of this.candidates(qTokens)) {
+      const item = this.items[idx]
       let score = 0
       if (item.title === q) score += 100
       if (item.title.startsWith(q)) score += 40

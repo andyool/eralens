@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { HistEvent, TimeView } from '../lib/types'
 import { ParticleField } from '../lib/particleField'
 import type { Forest, HNode } from '../lib/hierarchy'
@@ -9,14 +9,14 @@ import { categoryColor } from '../data/categories'
 import { fetchWikiSummary } from '../lib/wiki'
 
 interface Props {
-  events: HistEvent[]
+  /** Filter-passing events in the current window, oldest first (from App). */
+  visibleSorted: HistEvent[]
   forest: Forest
   view: TimeView
   onViewChange: (v: TimeView) => void
   /** A deliberate range selection (shift-drag) — recorded in history for ↩ Back. */
   onRangeSelect: (v: TimeView) => void
   nodePredicate: (node: HNode) => boolean
-  eventMatches: (ev: HistEvent) => boolean
   causalOf: (id: string) => CausalLinks | undefined
   selectedId: string | null
   onSelect: (id: string | null) => void
@@ -28,13 +28,12 @@ interface Props {
 const NO_LINKS: ReadonlySet<string> = new Set()
 
 export default function TimeCanvas({
-  events,
+  visibleSorted,
   forest,
   view,
   onViewChange,
   onRangeSelect,
   nodePredicate,
-  eventMatches,
   causalOf,
   selectedId,
   onSelect,
@@ -49,14 +48,6 @@ export default function TimeCanvas({
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [chip, setChip] = useState<{ x: number; y: number } | null>(null)
   const [hoverThumb, setHoverThumb] = useState<string | null>(null)
-
-  const visibleSorted = useMemo(
-    () =>
-      events
-        .filter((e) => e.tier !== 'moment' && e.year >= view.startYear && e.year <= view.endYear && eventMatches(e))
-        .sort((a, b) => a.year - b.year),
-    [events, view, eventMatches],
-  )
 
   const emphasisId = hoverId ?? selectedId
   const hoverNode = hoverId ? forest.map.get(hoverId) : null

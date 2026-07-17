@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { HistEvent } from '../lib/types'
 import { formatEventDate } from '../lib/dateFormat'
 import { categoryColor } from '../data/categories'
@@ -25,6 +25,14 @@ export default function StoryView({ event, onClose }: Props) {
   const [summary, setSummary] = useState<WikiSummary | null>(null)
   const [parts, setParts] = useState<StoryPart[] | null>(null)
   const [stripRef, stripSize] = useResizeObserver<HTMLDivElement>()
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
+  // Same focus contract as the event card: take focus on open, restore on close.
+  useEffect(() => {
+    const prev = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    rootRef.current?.focus()
+    return () => prev?.focus()
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -98,10 +106,12 @@ export default function StoryView({ event, onClose }: Props) {
 
   return (
     <div
+      ref={rootRef}
       className="story-view"
       style={{ ['--story-accent' as string]: accent }}
       role="dialog"
       aria-label={`Story of ${event.title}`}
+      tabIndex={-1}
     >
       <header className="story-head">
         {summary?.thumbnail && <img className="story-hero" src={summary.thumbnail} alt="" />}

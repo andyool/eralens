@@ -1,18 +1,24 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import type { HistEvent, TimeView } from '../lib/types'
 import {
   axisTicks,
   clampView,
   fractionInView,
+  fractionOnFullAxis,
   panView,
+  unwarp,
+  warp,
   xToYear,
+  yearAtFullAxisFraction,
   zoomView,
 } from '../lib/timeMapping'
+import { sliceInView } from '../lib/eventWindow'
 import { formatYear } from '../lib/dateFormat'
 import { useResizeObserver } from '../hooks'
 
 interface Props {
   view: TimeView
+  /** Year-sorted events (oldest first) — enables binary-search slicing. */
   events: HistEvent[]
   onChange: (view: TimeView) => void
   /** A deliberate range selection — recorded in history for ↩ Back. */
@@ -58,6 +64,8 @@ export default function Navigator({
 }: Props) {
   const [trackRef, size] = useResizeObserver<HTMLDivElement>()
   const histRef = useRef<HTMLCanvasElement | null>(null)
+  const overviewRef = useRef<HTMLCanvasElement | null>(null)
+  const ovDragging = useRef(false)
   const [brush, setBrush] = useState<{ x0: number; x1: number } | null>(null)
 
   // The precise year-range picker. Inputs mirror the view unless being edited.
@@ -88,6 +96,68 @@ export default function Navigator({
   const width = size.width || 800
   const ticks = useMemo(() => axisTicks(view, width, 60), [view, width])
 
+  // ── Overview strip: all of time, with a "you are here" window ─────────
+  // The density silhouette over the FULL axis only depends on the dataset,
+  // so it redraws on data/size changes — never while panning.
+  useEffect(() => {
+    const canvas = overviewRef.current
+    if (!canvas) return
+    const dpr = Math.min(2, window.devicePixelRatio || 1)
+    const w = width
+    const h = canvas.clientHeight || 18
+    if (w < 2) return
+    canvas.width = Math.round(w * dpr)
+    canvas.height = Math.round(h * dpr)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, w, h)
+
+    const bins = Math.max(80, Math.min(560, Math.floor(w / 2)))
+    const density = new Array<number>(bins).fill(0)
+    for (const ev of events) {
+      if (ev.tier === 'moment') continue
+      const f = fractionOnFullAxis(ev.year)
+      if (f < 0 || f > 1) continue
+      density[Math.min(bins - 1, Math.floor(f * bins))] += 1
+    }
+    const max = Math.max(1, ...density)
+    ctx.fillStyle = 'rgba(139,157,255,0.4)'
+    ctx.beginPath()
+    ctx.moveTo(0, h)
+    for (let i = 0; i < bins; i++) {
+      const x = (i / (bins - 1)) * w
+      const v = Math.sqrt(density[i] / max)
+      ctx.lineTo(x, h - v * (h - 2))
+    }
+    ctx.lineTo(w, h)
+    ctx.closePath()
+    ctx.fill()
+  }, [events, width])
+
+  /** Recentre the view (keeping its warped width) on an overview position. */
+  const overviewJump = useCallback(
+    (clientX: number) => {
+      const el = overviewRef.current
+      if (!el) return
+      const rect = el.getBoundingClientRect()
+      if (rect.width <= 0) return
+      const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+      const tMid = warp(yearAtFullAxisFraction(frac))
+      const half = (warp(view.startYear) - warp(view.endYear)) / 2
+      onChange(clampView({ startYear: unwarp(tMid + half), endYear: unwarp(tMid - half) }))
+    },
+    [view, onChange],
+  )
+
+  // Window box position on the full axis (older = left).
+  const ovLeft = fractionOnFullAxis(view.startYear) * 100
+  const ovRight = fractionOnFullAxis(view.endYear) * 100
+
+  // The silhouette is decorative — let it trail the urgent view updates so a
+  // fast pan never blocks on redrawing the histogram.
+  const deferredView = useDeferredValue(view)
+
   // Density silhouette of the events inside the visible range.
   useEffect(() => {
     const canvas = histRef.current
@@ -105,9 +175,9 @@ export default function Navigator({
 
     const bins = Math.max(60, Math.min(420, Math.floor(w / 3)))
     const density = new Array<number>(bins).fill(0)
-    for (const ev of events) {
+    for (const ev of sliceInView(events, deferredView)) {
       if (ev.tier === 'moment') continue
-      const f = fractionInView(ev.year, view)
+      const f = fractionInView(ev.year, deferredView)
       if (f < 0 || f > 1) continue
       density[Math.min(bins - 1, Math.floor(f * bins))] += 1
     }
@@ -137,7 +207,7 @@ export default function Navigator({
       ctx.lineTo(x, h)
       ctx.stroke()
     }
-  }, [events, view, ticks, size.width, size.height])
+  }, [events, deferredView, ticks, size.width, size.height])
 
   const localX = useCallback(
     (clientX: number) => {
@@ -219,6 +289,42 @@ export default function Navigator({
 
   return (
     <div className="navigator" aria-label="Time scale">
+      <div
+        className="nav-overview"
+        title="All of time — click or drag to move the window"
+        onPointerDown={(e) => {
+          e.preventDefault()
+          ;(e.target as Element).setPointerCapture?.(e.pointerId)
+          ovDragging.current = true
+          overviewJump(e.clientX)
+        }}
+        onPointerMove={(e) => {
+          if (ovDragging.current) overviewJump(e.clientX)
+        }}
+        onPointerUp={() => {
+          ovDragging.current = false
+        }}
+        onPointerCancel={() => {
+          ovDragging.current = false
+        }}
+      >
+        <canvas className="nav-ov-canvas" ref={overviewRef} aria-hidden />
+        <span className="nav-ov-label left" aria-hidden>
+          Big Bang
+        </span>
+        <span className="nav-ov-label right" aria-hidden>
+          Now
+        </span>
+        <div
+          className="nav-ov-window"
+          aria-hidden
+          style={{
+            left: `${ovLeft}%`,
+            width: `max(6px, ${Math.max(0, ovRight - ovLeft)}%)`,
+          }}
+        />
+      </div>
+
       <div
         className={`nav-track ${brushActive ? 'brushing' : ''}`}
         ref={trackRef}

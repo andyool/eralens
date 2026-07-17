@@ -35,7 +35,7 @@ function normTitle(t: string): string {
  * where 0 means "absent" and wiki is 1 (derivable from title), 0 (no article)
  * or an explicit article title.
  */
-type CompactRow = [
+export type CompactRow = [
   string, string, number, number, number, number, number, number,
   0 | 1 | string, number, number, string | 0, string[] | 0, string[] | 0, string[] | 0,
   number, number,
@@ -57,7 +57,7 @@ export interface RegionDef {
   label: string
 }
 
-interface CompactPayload {
+export interface CompactPayload {
   format: 'eralens-compact-1'
   categories: string[]
   civs?: CivDef[]
@@ -77,7 +77,8 @@ function isCompactPayload(x: unknown): x is CompactPayload {
   return p.format === 'eralens-compact-1' && Array.isArray(p.categories) && Array.isArray(p.events)
 }
 
-function expandCompact(payload: CompactPayload): HistEvent[] {
+/** Exported for tests. */
+export function expandCompact(payload: CompactPayload): HistEvent[] {
   const catByBit = payload.categories as CategoryId[]
   const out: HistEvent[] = []
   for (const row of payload.events) {
@@ -144,7 +145,7 @@ function tagSeedMasks(civs: CivDef[]): void {
  * which Wikidata's point-in-time query can't cover). Children of a dropped
  * duplicate are re-parented onto the seed event so hierarchies stay intact.
  */
-function mergeWithSeed(generated: HistEvent[]): HistEvent[] {
+export function mergeWithSeed(generated: HistEvent[]): HistEvent[] {
   const seedByTitle = new Map(EVENTS.map((e) => [normTitle(e.title), e]))
   const remap = new Map<string, string>()
   const kept: HistEvent[] = []

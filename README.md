@@ -55,7 +55,16 @@ This repository is **Stage 1** — the minimum viable product. See
   field), and Wikipedia / Wikidata links. Images and richer summaries are pulled
   from Wikipedia on demand and degrade gracefully offline.
 - **Search** — titles, people, places and categories, with prefix matching and
-  light spelling tolerance.
+  light spelling tolerance, backed by a prefix-candidate index so it stays
+  instant on 100k+ events.
+- **Saved events** — star any event into a local collection (stored in your
+  browser) and jump back to it from the ★ Saved panel in the header.
+- **Shareable URLs** — the address bar always encodes the whole scene (time
+  window, view mode, filters, selected event), so copying the URL shares
+  exactly what you see.
+- **Overview strip** — a thin all-of-time band above the navigator shows where
+  the current window sits between the Big Bang and now; click or drag it to
+  jump.
 - **"Feeling lucky"** — Surprise me · A major turning point · On this day ·
   Something obscure.
 - **Built for every input** — responsive from phone to desktop; mouse hover,
@@ -77,6 +86,7 @@ Other scripts:
 npm run build      # type-check + production build to dist/
 npm run preview    # serve the production build
 npm run typecheck  # tsc --noEmit
+npm test           # Vitest unit tests for the core logic
 ```
 
 No API keys or backend are required — the app ships with a curated dataset and

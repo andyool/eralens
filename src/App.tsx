@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import type { CategoryId, Era, HistEvent, TimeView } from './lib/types'
 import { loadEvents, EVENTS, type CivDef, type RegionDef } from './data/events'
 import { CATEGORIES, categoryColor } from './data/categories'
 import { MIN_YEAR, MAX_YEAR, clampView, viewAround, viewFromSpan, viewMidYear } from './lib/timeMapping'
+import { sliceInView, sortByYear } from './lib/eventWindow'
 import { buildForest, type HNode } from './lib/hierarchy'
 import { buildCausalIndex } from './lib/related'
 import { discover, type LuckyMode } from './lib/discover'
@@ -11,6 +12,7 @@ import { usePrefersReducedMotion, useMediaQuery } from './hooks'
 
 import SearchBox from './components/SearchBox'
 import Discover from './components/Discover'
+import SavedPanel from './components/SavedPanel'
 import Sidebar from './components/Sidebar'
 import EraRail from './components/EraRail'
 import FilterRails from './components/FilterRails'
@@ -33,18 +35,44 @@ const MODES: { id: ViewMode; icon: string; label: string }[] = [
 
 const FULL_VIEW: TimeView = { startYear: MIN_YEAR, endYear: MAX_YEAR }
 
+/**
+ * Initial state from the URL, so a shared link restores the whole scene —
+ * time window (`v=start_end`), view mode, category filters and civilization/
+ * region masks — not just the selected event.
+ */
+function parseInitialUrl() {
+  const sp = new URLSearchParams(location.search)
+  let view: TimeView | null = null
+  const v = sp.get('v')
+  if (v) {
+    const [a, b] = v.split('_').map(Number)
+    if (Number.isFinite(a) && Number.isFinite(b) && a < b) view = clampView({ startYear: a, endYear: b })
+  }
+  const modeParam = sp.get('mode')
+  const mode: ViewMode = MODES.some((m) => m.id === modeParam) ? (modeParam as ViewMode) : 'timeline'
+  const validCats = new Set<string>(CATEGORIES.map((c) => c.id))
+  const cats = new Set<CategoryId>()
+  for (const c of (sp.get('cats') ?? '').split(',')) {
+    if (validCats.has(c)) cats.add(c as CategoryId)
+  }
+  const civ = Math.max(0, parseInt(sp.get('civ') ?? '0', 10) || 0)
+  const reg = Math.max(0, parseInt(sp.get('reg') ?? '0', 10) || 0)
+  return { view, mode, cats, civ, reg }
+}
+const INIT = parseInitialUrl()
+
 export default function App() {
   const [events, setEvents] = useState<HistEvent[]>(EVENTS)
   const [civDefs, setCivDefs] = useState<CivDef[]>([])
   const [regionDefs, setRegionDefs] = useState<RegionDef[]>([])
-  const [view, setViewState] = useState<TimeView>(FULL_VIEW)
-  const [activeCats, setActiveCats] = useState<Set<CategoryId>>(new Set())
+  const [view, setViewState] = useState<TimeView>(INIT.view ?? FULL_VIEW)
+  const [activeCats, setActiveCats] = useState<Set<CategoryId>>(INIT.cats)
   const [activeCivMask, setActiveCivMask] = useState(0)
   const [activeRegionMask, setActiveRegionMask] = useState(0)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [activeEraId, setActiveEraId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [mode, setMode] = useState<ViewMode>('timeline')
+  const [mode, setMode] = useState<ViewMode>(INIT.mode)
   const [soundOn, setSoundOn] = useState(false)
   const [toast, setToast] = useState<{ title: string; desc: string; color: string } | null>(null)
   const [hintDone, setHintDone] = useState(false)
@@ -100,6 +128,15 @@ export default function App() {
   }, [events, focusId, fullForest, causalIndex, byId])
   const visibleIds = useMemo(() => new Set(visibleEvents.map((e) => e.id)), [visibleEvents])
 
+  // Year-sorted copy of the visible events (usually the input is already
+  // sorted, so this is free). Everything derived from "events in the current
+  // window" binary-searches this instead of scanning the whole dataset —
+  // panning must never do O(all events) work per tick. The non-urgent
+  // derivations (counts, list) additionally trail the view via
+  // useDeferredValue so the canvas stays smooth during a drag.
+  const sortedEvents = useMemo(() => sortByYear(visibleEvents), [visibleEvents])
+  const deferredView = useDeferredValue(view)
+
   // The forest the canvas renders: full clustered forest normally; in focus
   // mode a flat forest of the subtree (no time buckets — the event itself is
   // the timeline).
@@ -119,11 +156,16 @@ export default function App() {
       setEvents(data)
       setCivDefs(civs)
       setRegionDefs(regions)
+      // Civilization/region masks from the URL only apply once their
+      // definitions exist — otherwise they'd filter out everything.
+      if (civs.length > 0 && INIT.civ) setActiveCivMask(INIT.civ)
+      if (regions.length > 0 && INIT.reg) setActiveRegionMask(INIT.reg)
       const param = new URLSearchParams(location.search).get('event')
       if (param) {
         const ev = data.find((e) => e.id === param)
         if (ev) {
-          setViewState(viewAround(ev.year))
+          // An explicit v= in the link wins over the default zoom-to-event.
+          if (!INIT.view) setViewState(viewAround(ev.year))
           setSelectedId(ev.id)
         }
       }
@@ -170,21 +212,18 @@ export default function App() {
   const counts = useMemo(() => {
     const m = new Map<CategoryId, number>()
     for (const cat of CATEGORIES) m.set(cat.id, 0)
-    for (const ev of visibleEvents) {
-      if (ev.year < view.startYear || ev.year > view.endYear) continue
+    for (const ev of sliceInView(sortedEvents, deferredView)) {
       if (activeCivMask !== 0 && ((ev.civMask ?? 0) & activeCivMask) === 0) continue
       if (activeRegionMask !== 0 && ((ev.regionMask ?? 0) & activeRegionMask) === 0) continue
       for (const c of ev.categories) m.set(c, (m.get(c) ?? 0) + 1)
     }
     return m
-  }, [visibleEvents, view, activeCivMask, activeRegionMask])
+  }, [sortedEvents, deferredView, activeCivMask, activeRegionMask])
 
+  // Already year-ordered by construction — no per-tick sort.
   const visibleSorted = useMemo(
-    () =>
-      visibleEvents
-        .filter((e) => e.tier !== 'moment' && e.year >= view.startYear && e.year <= view.endYear && eventMatches(e))
-        .sort((a, b) => a.year - b.year),
-    [visibleEvents, view, eventMatches],
+    () => sliceInView(sortedEvents, deferredView).filter((e) => e.tier !== 'moment' && eventMatches(e)),
+    [sortedEvents, deferredView, eventMatches],
   )
 
   const focusNode: HNode | null = useMemo(() => {
@@ -238,11 +277,44 @@ export default function App() {
     setHintDone(true)
   }, [])
 
+  // Keep the URL in sync with the whole scene (view window, mode, filters,
+  // selection) so any moment of exploration is shareable. Debounced so a pan
+  // or inertia glide writes once at the end, not per frame.
+  const urlTimer = useRef<number | null>(null)
+  useEffect(() => {
+    if (urlTimer.current != null) window.clearTimeout(urlTimer.current)
+    urlTimer.current = window.setTimeout(() => {
+      const url = new URL(location.href)
+      const sp = url.searchParams
+      const setOrDel = (key: string, value: string | null) => {
+        if (value) sp.set(key, value)
+        else sp.delete(key)
+      }
+      const isFull = view.startYear === MIN_YEAR && view.endYear === MAX_YEAR
+      setOrDel('v', isFull ? null : `${view.startYear}_${view.endYear}`)
+      setOrDel('mode', mode === 'timeline' ? null : mode)
+      setOrDel('cats', activeCats.size > 0 ? [...activeCats].join(',') : null)
+      setOrDel('civ', activeCivMask !== 0 ? String(activeCivMask) : null)
+      setOrDel('reg', activeRegionMask !== 0 ? String(activeRegionMask) : null)
+      setOrDel('event', selectedId)
+      history.replaceState(null, '', url)
+    }, 250)
+    return () => {
+      if (urlTimer.current != null) window.clearTimeout(urlTimer.current)
+    }
+  }, [view, mode, activeCats, activeCivMask, activeRegionMask, selectedId])
+
   // Escape steps out: the open card first, then the story, then focus.
+  // Global on purpose — it must work no matter what currently has keyboard
+  // focus (a button inside the card, the body, …). Components that use
+  // Escape internally (the search dropdown) stop propagation themselves.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (selectedId) return // TimeCanvas/card handle closing the selection
+      if (selectedId) {
+        setSelectedId(null)
+        return
+      }
       if (storyEvent) {
         setStoryEvent(null)
         return
@@ -280,17 +352,9 @@ export default function App() {
     [fullForest, view, soundOn],
   )
 
-  const updateUrl = useCallback((id: string | null) => {
-    const url = new URL(location.href)
-    if (id) url.searchParams.set('event', id)
-    else url.searchParams.delete('event')
-    history.replaceState(null, '', url)
-  }, [])
-
   const select = useCallback(
     (id: string | null, focus = false) => {
       setSelectedId(id)
-      updateUrl(id)
       setHintDone(true)
       if (id) {
         if (soundOn) sound.select()
@@ -308,7 +372,7 @@ export default function App() {
         if (isMobile) setSidebarOpen(false)
       }
     },
-    [byId, soundOn, isMobile, updateUrl, focusStack.length, visibleIds, pushHistory, view],
+    [byId, soundOn, isMobile, focusStack.length, visibleIds, pushHistory, view],
   )
 
   const drill = useCallback(
@@ -400,12 +464,11 @@ export default function App() {
       setViewState(viewAround(ev.year))
       setActiveEraId(null)
       setSelectedId(ev.id)
-      updateUrl(ev.id)
       setHintDone(true)
       setToast({ title: 'Discover', desc: ev.title, color: '#8b9dff' })
       if (soundOn) sound.select()
     },
-    [events, soundOn, updateUrl, pushHistory, view],
+    [events, soundOn, pushHistory, view],
   )
 
   return (
@@ -433,6 +496,7 @@ export default function App() {
 
         <div className="header-actions">
           <Discover onPick={lucky} />
+          <SavedPanel byId={byId} onPick={(id) => select(id, true)} />
           <div className="mode-switch" role="group" aria-label="View mode">
             {MODES.map((m) => (
               <button
@@ -499,13 +563,12 @@ export default function App() {
           )}
           {mode === 'timeline' && (
             <TimeCanvas
-              events={visibleEvents}
+              visibleSorted={visibleSorted}
               forest={forest}
               view={view}
               onViewChange={setView}
               onRangeSelect={jumpView}
               nodePredicate={nodePredicate}
-              eventMatches={eventMatches}
               causalOf={causalOf}
               selectedId={selectedId}
               onSelect={(id) => select(id, false)}
@@ -584,7 +647,7 @@ export default function App() {
 
       <Navigator
         view={view}
-        events={visibleEvents}
+        events={sortedEvents}
         onChange={setView}
         onSelectRange={jumpView}
         onBack={goBack}

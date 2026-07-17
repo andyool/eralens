@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import type { HistEvent } from '../lib/types'
 import { SearchIndex } from '../lib/search'
 import { compactDate } from '../lib/dateFormat'
@@ -16,7 +16,12 @@ export default function SearchBox({ events, onPick }: Props) {
   const [active, setActive] = useState(0)
   const rootRef = useRef<HTMLDivElement | null>(null)
 
-  const results = useMemo(() => (query.trim() ? index.search(query, 8) : []), [index, query])
+  // Deferred so fast typing never waits on scoring — results trail by a beat.
+  const deferredQuery = useDeferredValue(query)
+  const results = useMemo(
+    () => (deferredQuery.trim() ? index.search(deferredQuery, 8) : []),
+    [index, deferredQuery],
+  )
 
   useEffect(() => setActive(0), [query])
 
@@ -35,6 +40,15 @@ export default function SearchBox({ events, onPick }: Props) {
   }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      // Escape closes just the dropdown; don't let it reach the app-level
+      // handler that would also close the open card / story behind it.
+      if (open && query.trim()) {
+        e.stopPropagation()
+        setOpen(false)
+      }
+      return
+    }
     if (!open || results.length === 0) return
     if (e.key === 'ArrowDown') {
       e.preventDefault()
@@ -46,8 +60,6 @@ export default function SearchBox({ events, onPick }: Props) {
       e.preventDefault()
       const hit = results[active]
       if (hit) choose(hit.event)
-    } else if (e.key === 'Escape') {
-      setOpen(false)
     }
   }
 
@@ -80,7 +92,9 @@ export default function SearchBox({ events, onPick }: Props) {
       {open && query.trim() && (
         <div className="search-results" id="search-results" role="listbox">
           {results.length === 0 ? (
-            <div className="search-empty">No matches for “{query.trim()}”.</div>
+            // While the deferred query catches up, stay quiet rather than
+            // flashing a wrong "no matches".
+            deferredQuery === query && <div className="search-empty">No matches for “{query.trim()}”.</div>
           ) : (
             results.map((hit, i) => (
               <button

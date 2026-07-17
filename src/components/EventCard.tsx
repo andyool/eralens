@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { HistEvent } from '../lib/types'
 import type { Forest } from '../lib/hierarchy'
 import { CATEGORY_MAP, categoryColor } from '../data/categories'
 import { formatEventDate, compactDate } from '../lib/dateFormat'
 import { relatedEvents } from '../lib/related'
 import { fetchWikiSummary, wikipediaUrl, wikidataUrl, type WikiSummary } from '../lib/wiki'
+import { toggleSaved, useSavedIds } from '../lib/bookmarks'
 
 interface Props {
   event: HistEvent
@@ -19,6 +20,15 @@ export default function EventCard({ event, events, forest, onSelectEvent, onDril
   const [wiki, setWiki] = useState<WikiSummary | null>(null)
   const [imgOk, setImgOk] = useState(true)
   const [copied, setCopied] = useState(false)
+  const cardRef = useRef<HTMLDivElement | null>(null)
+
+  // Move keyboard focus into the dialog on open and hand it back on close,
+  // so Escape and Tab behave no matter where the pointer was before.
+  useEffect(() => {
+    const prev = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    cardRef.current?.focus()
+    return () => prev?.focus()
+  }, [])
 
   const accent = categoryColor(event.categories[0])
   const realById = useMemo(() => new Map(events.map((e) => [e.id, e])), [events])
@@ -47,9 +57,12 @@ export default function EventCard({ event, events, forest, onSelectEvent, onDril
   const wpUrl = wikipediaUrl(event)
   const wdUrl = wikidataUrl(event)
   const summary = wiki?.extract || event.description
+  const saved = useSavedIds().includes(event.id)
 
   const share = async () => {
-    const url = `${location.origin}${location.pathname}?event=${encodeURIComponent(event.id)}`
+    // The app keeps the full scene (view, mode, filters, selection) in the
+    // URL, so sharing the current address restores exactly this moment.
+    const url = location.href
     try {
       if (navigator.share) await navigator.share({ title: event.title, url })
       else {
@@ -64,11 +77,13 @@ export default function EventCard({ event, events, forest, onSelectEvent, onDril
 
   return (
     <div
+      ref={cardRef}
       className="event-card"
       style={{ ['--card-accent' as string]: accent }}
       role="dialog"
       aria-label={event.title}
       aria-modal="false"
+      tabIndex={-1}
     >
       <div className="card-media">
         {wiki?.thumbnail && imgOk ? (
@@ -185,6 +200,9 @@ export default function EventCard({ event, events, forest, onSelectEvent, onDril
               Wikidata ↗
             </a>
           )}
+          <button onClick={() => toggleSaved(event.id)} aria-pressed={saved}>
+            {saved ? '★ Saved' : '☆ Save'}
+          </button>
           <button onClick={share}>{copied ? 'Link copied ✓' : 'Share'}</button>
         </div>
       </div>
